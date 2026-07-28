@@ -7,19 +7,43 @@ import { applicationFingerprint } from '../utils/fingerprint.js';
 export class ExecutionService {
   constructor(private readonly dp: DevPanelClient, private readonly store: PlanStore) {}
 
-  async execute(planId: string): Promise<{ state: 'APPROVAL_REQUIRED' | 'REJECTED' | 'EXECUTED'; plan: ChangePlan; result?: unknown }> {
-    let plan = await this.requirePlan(planId);
+  async executeApprovedPlan(plan: ChangePlan): Promise<{ state: 'EXECUTED'; plan: ChangePlan; result?: unknown }> {
     this.verifyIntegrity(plan);
     if (new Date(plan.expiresAt).getTime() <= Date.now()) {
-      plan = await this.store.setStatus(plan.id, 'STALE');
+      await this.store.setStatus(plan.id, 'STALE');
       throw new Error('Plan expired. Create and review a new plan.');
     }
-    if (plan.status === 'REJECTED') return { state: 'REJECTED', plan };
-    if (!plan.approval || plan.approval.decision !== 'APPROVE') return { state: 'APPROVAL_REQUIRED', plan };
+    if (!plan.approval || plan.approval.decision !== 'APPROVE') {
+      throw new Error('Plan has not been approved');
+    }
     if (plan.approval.planHash !== plan.hash) throw new Error('Approval is not bound to the current plan hash');
-    if (plan.status !== 'APPROVED') throw new Error(`Plan is not executable from status ${plan.status}`);
 
     await this.revalidate(plan);
+    return this.performExecution(plan);
+  }
+
+  async revalidatePlan(plan: ChangePlan): Promise<void> {
+    await this.revalidate(plan);
+  }
+
+  private async revalidate(plan: ChangePlan): Promise<void> {
+    await this.store.setStatus(plan.id, 'VALIDATING');
+    if (!plan.preconditions.applicationId) return;
+    const app = await this.dp.getApplication(plan.preconditions.applicationId);
+    if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
+      await this.store.setStatus(plan.id, 'STALE');
+      throw new Error('Plan is stale: application changed since planning. Create a new plan.');
+    }
+    if (plan.preconditions.backupId) {
+      const backups = await this.dp.listBackups(app);
+      if (!backups.some(b => b.id === plan.preconditions.backupId)) {
+        await this.store.setStatus(plan.id, 'STALE');
+        throw new Error('Plan is stale: selected backup no longer exists.');
+      }
+    }
+  }
+
+  private async performExecution(plan: ChangePlan): Promise<{ state: 'EXECUTED'; plan: ChangePlan; result?: unknown }> {
     plan = await this.store.setStatus(plan.id, 'EXECUTING');
     const startedAt = new Date().toISOString();
     await this.store.setExecution(plan.id, { startedAt });
@@ -33,22 +57,6 @@ export class ExecutionService {
       await this.store.setExecution(plan.id, { startedAt, finishedAt: new Date().toISOString(), error: message });
       await this.store.setStatus(plan.id, 'FAILED');
       throw error;
-    }
-  }
-
-  private async revalidate(plan: ChangePlan): Promise<void> {
-    if (!plan.preconditions.applicationId) return;
-    const app = await this.dp.getApplication(plan.preconditions.applicationId);
-    if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
-      await this.store.setStatus(plan.id, 'STALE');
-      throw new Error('Plan is stale: application changed since planning. Create a new plan.');
-    }
-    if (plan.preconditions.backupId) {
-      const backups = await this.dp.listBackups(app);
-      if (!backups.some(b => b.id === plan.preconditions.backupId)) {
-        await this.store.setStatus(plan.id, 'STALE');
-        throw new Error('Plan is stale: selected backup no longer exists.');
-      }
     }
   }
 

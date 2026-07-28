@@ -20,7 +20,12 @@ export class PlanService {
     return this.createPlan({
       action: 'CREATE_APPLICATION', risk: 'LOW',
       summary: `Create application from ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
-      target: { workspaceId: input.workspaceId, repository: `${input.repositoryOwner}/${input.repositoryName}`, branch: input.branch, projectType: input.projectType },
+      target: {
+        workspaceId: input.workspaceId,
+        repository: `${input.repositoryOwner}/${input.repositoryName}`,
+        branch: input.branch,
+        projectType: input.projectType,
+      },
       proposedInput: input as unknown as Record<string, unknown>,
       steps: [
         step(1, 'CREATE_PROJECT', 'Create a DevPanel project using the verified create profile', true),
@@ -83,5 +88,5 @@ export class PlanService {
 }
 
 function step(order: number, operation: string, description: string, mutates: boolean): PlanStep { return { order, operation, description, mutates }; }
-function appSummary(app: { id: string; projectId: string; workspaceId: string; name?: string; hostname?: string; status?: string }) { return { applicationId: app.id, projectId: app.projectId, workspaceId: app.workspaceId, name: app.name, hostname: app.hostname, status: app.status }; }
+function appSummary(app: { id: string; projectId: string; workspaceId: string; name?: string; hostname?: string; status?: string }) { return { applicationId: app.id, applicationName: app.name, projectId: app.projectId, workspaceId: app.workspaceId, hostname: app.hostname, status: app.status }; }
 function snapshot(app: Parameters<typeof applicationFingerprint>[0]): Preconditions { return { applicationId: app.id, applicationStatus: app.status, appFingerprint: applicationFingerprint(app) }; }

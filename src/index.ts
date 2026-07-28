@@ -12,4 +12,4 @@ startApprovalReviewServer(store);
 const server = buildServer(dp, store);
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode`);
+console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode (approval: ${config.approvalMode})`);

@@ -13,10 +13,10 @@ These examples describe intended agent behavior. The model wording may vary; the
 1. Resolve `Existing Demo`.
 2. Call `devpanel_plan_backup_application`.
 3. Show the plan summary and state that nothing changed yet.
-4. Call `devpanel_execute_plan(planId)` only to enter the approval gate.
-5. Present the returned review URL.
-6. Wait for the user to approve through the review UI.
-7. Re-call `devpanel_execute_plan` using only the same `planId`.
+4. Call `devpanel_approve_and_execute_plan(planId)`.
+5. If Form Elicitation is supported: native approve/decline dialog appears. User approves inline.
+6. If not: present the returned external review URL. User opens it and approves.
+7. Server revalidates, executes, and returns result.
 8. Verify with `devpanel_list_backups`.
 
 The agent must never say it approved on the user's behalf.
@@ -34,7 +34,7 @@ The agent must never say it approved on the user's behalf.
 - choose latest backup from the server result
 - produce HIGH-risk restore plan
 - include backup ID in immutable target/preconditions
-- require approval
+- require approval via elicitation or external URL
 - revalidate both app fingerprint and backup existence immediately before restore
 
 ## Example C -- Ambiguous target

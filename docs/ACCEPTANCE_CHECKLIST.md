@@ -3,24 +3,32 @@
 ## Safety
 
 - [ ] no direct mutating application tools exist
-- [ ] `devpanel_execute_plan` accepts `planId` only
+- [ ] `devpanel_approve_and_execute_plan` accepts `planId` only
 - [ ] plan hash changes if any semantic plan field changes
 - [ ] approval is stored separately from the tool call
-- [ ] approval record includes plan hash
+- [ ] approval record includes plan hash and approval method
 - [ ] expired plans cannot execute
 - [ ] stale application fingerprint cannot execute
 - [ ] selected restore backup must still exist
 - [ ] duplicate/ambiguous application search fails closed
 
+## Approval
+
+- [ ] Form Elicitation works when client supports it
+- [ ] URL Elicitation works as fallback
+- [ ] External URL works as last resort
+- [ ] `APPROVAL_MODE` config controls which provider is used
+- [ ] `auto` mode performs capability negotiation
+- [ ] model cannot approve plans directly
+- [ ] elicitation decline results in no execution
+- [ ] elicitation cancel is handled gracefully
+
 ## Mock demo
 
 - [ ] list application
 - [ ] plan backup
-- [ ] execute before approval returns `APPROVAL_REQUIRED`
-- [ ] review page renders exact plan
-- [ ] Reject prevents execution
-- [ ] Approve allows same plan to execute
-- [ ] backup is visible after execution
+- [ ] approve and execute via Form Elicitation
+- [ ] verify backup exists
 - [ ] restore plan works
 - [ ] delete plan works
 

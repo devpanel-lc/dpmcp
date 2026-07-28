@@ -1,8 +1,12 @@
 export type PlanStatus =
+  | 'DRAFT'
+  | 'READY_FOR_REVIEW'
   | 'PENDING_APPROVAL'
   | 'APPROVED'
   | 'REJECTED'
+  | 'CANCELLED'
   | 'STALE'
+  | 'VALIDATING'
   | 'EXECUTING'
   | 'SUCCEEDED'
   | 'FAILED';
@@ -14,6 +18,26 @@ export type PlanAction =
   | 'BACKUP_APPLICATION'
   | 'RESTORE_APPLICATION'
   | 'DELETE_APPLICATION';
+
+export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
+
+export type ErrorCode =
+  | 'PLAN_NOT_FOUND'
+  | 'PLAN_EXPIRED'
+  | 'PLAN_STALE'
+  | 'PLAN_REJECTED'
+  | 'PLAN_ALREADY_EXECUTED'
+  | 'PLAN_INTEGRITY_FAILED'
+  | 'APPROVAL_REQUIRED'
+  | 'APPROVAL_CANCELLED'
+  | 'EXECUTION_FAILED'
+  | 'DEVPanel API_ERROR'
+  | 'INTERNAL_ERROR';
+
+export interface ElicitationResult {
+  action: 'accept' | 'decline' | 'cancel';
+  content?: Record<string, unknown>;
+}
 
 export interface ApplicationRef {
   id: string;
@@ -53,7 +77,7 @@ export interface ApprovalRecord {
   planHash: string;
   approvedAt: string;
   approvedBy: string;
-  source: 'review-ui' | 'mcp-elicitation' | 'test';
+  approvalMethod: ApprovalMethod;
 }
 
 export interface ChangePlan {

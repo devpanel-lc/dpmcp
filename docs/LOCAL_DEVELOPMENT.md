@@ -2,9 +2,9 @@
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - npm
-- browser
+- MCP client with Elicitation support (optional, for inline approval)
 
 ## 1. Install
 
@@ -17,6 +17,7 @@ Keep:
 
 ```env
 DP_MODE=mock
+APPROVAL_MODE=auto
 ```
 
 for the first run.
@@ -30,7 +31,7 @@ npm run dev
 The process runs two local surfaces:
 
 1. MCP stdio transport
-2. human review UI on `http://127.0.0.1:8787`
+2. External approval UI on `http://127.0.0.1:8787` (fallback)
 
 All logs go to stderr because stdout is the MCP protocol channel.
 
@@ -68,48 +69,20 @@ Existing Demo
 
 Copy returned plan ID.
 
-### Attempt execution
+### Approve and execute
 
 ```json
 {"planId":"plan_..."}
 ```
 
-Expected:
+**With Elicitation support:** A native approve/decline dialog appears inside your MCP client. Click Approve.
 
-```text
-APPROVAL_REQUIRED
-```
+**Without Elicitation:** An approval URL is returned. Open it in a browser and click **Approve exact plan**.
 
-and an approval URL.
-
-At this point no backup has been created.
-
-### Review
-
-Open the URL in a browser. Verify:
-- action
-- risk
-- exact target
-- ordered steps
-- expected result
-- rollback
-- plan hash
-
-Click **Approve exact plan**.
-
-### Execute again
-
-Call:
-
-```json
-{"planId":"same plan ID"}
-```
-
-Expected:
-
-```text
-EXECUTED
-```
+After approval:
+- Server revalidates DevPanel state
+- Server executes mutation
+- Server returns result inline
 
 ### Verify
 
@@ -121,16 +94,56 @@ devpanel_list_backups
 
 The mock backup should now appear.
 
-## 5. Run tests
+## 5. Approval mode testing
+
+### Auto mode (default)
+
+```env
+APPROVAL_MODE=auto
+```
+
+Uses capability negotiation: Form Elicitation → URL Elicitation → External URL.
+
+### Force Form Elicitation
+
+```env
+APPROVAL_MODE=form
+```
+
+Requires MCP client with Elicitation support. Falls back to cancelled if unsupported.
+
+### Force URL Elicitation
+
+```env
+APPROVAL_MODE=url
+```
+
+Client prompts user to open review URL.
+
+### Force External URL
+
+```env
+APPROVAL_MODE=external
+```
+
+Always returns the external review URL. Useful for testing the fallback path.
+
+## 6. Run tests
 
 ```bash
 npm test
 npm run typecheck
 ```
 
-The included test verifies that execution does not happen before approval and succeeds after an approval record bound to the exact plan hash.
+Tests cover:
+- Basic plan → approval → execute flow
+- Form Elicitation approval/decline/cancel
+- External URL fallback
+- Model bypass attempts (no approval, wrong hash, tampered plan)
+- Stale and expired plans
+- Hash integrity
 
-## 6. Switching to real DevPanel
+## 7. Switching to real DevPanel
 
 Edit `.env`:
 
@@ -153,7 +166,7 @@ Recommended progression:
 6. delete only a disposable test application
 7. enable create only after contract capture
 
-## 7. Create-contract capture
+## 8. Create-contract capture
 
 In browser DevTools:
 
@@ -179,7 +192,7 @@ config/create-profiles/drupal11-demo.json
 
 and `RealDevPanelClient.createApplication()` if necessary.
 
-## 8. MCP host configuration example
+## 9. MCP host configuration example
 
 A generic stdio host configuration looks like:
 

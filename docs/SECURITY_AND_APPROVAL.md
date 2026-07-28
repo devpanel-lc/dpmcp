@@ -46,8 +46,8 @@ ApprovalRecord:
   "decision": "APPROVE",
   "planHash": "sha256:...",
   "approvedAt": "...",
-  "approvedBy": "...",
-  "source": "review-ui"
+  "approvedBy": "human",
+  "approvalMethod": "MCP_ELICITATION"
 }
 ```
 
@@ -88,7 +88,7 @@ MVP still requires approval for LOW risk changes. Risk is for presentation and f
 
 ## 7. Destructive tool annotation
 
-`devpanel_execute_plan` is intentionally annotated as mutating/destructive because it may execute plans with different risk levels. MCP tool annotations are hints for clients, not authorization controls. Server-side approval enforcement remains mandatory.
+`devpanel_approve_and_execute_plan` is intentionally annotated as mutating/destructive because it may execute plans with different risk levels. MCP tool annotations are hints for clients, not authorization controls. Server-side approval enforcement remains mandatory.
 
 ## 8. Credential rules
 
@@ -99,7 +99,27 @@ MVP still requires approval for LOW risk changes. Risk is for presentation and f
 - Redact authorization headers from logs.
 - Production should use user-scoped OAuth/OIDC tokens rather than one shared bearer token.
 
-## 9. Approval UI security -- local demo vs production
+## 9. Approval providers
+
+### Form Elicitation (primary)
+
+When the MCP client supports it, the server sends a native dialog asking the user to approve or reject the exact plan. The dialog shows the plan summary, risk level, and action.
+
+The model cannot generate a valid ElicitationResponse -- this is a protocol-level interaction between the MCP server and the client UI.
+
+### URL Elicitation (fallback)
+
+When the client supports URL Elicitation but not Form Elicitation, the server asks the client to open a review URL. The user reviews the plan in the browser and approves/rejects.
+
+### External URL (last resort)
+
+When neither elicitation mode is supported, the server returns an approval URL for the model to present to the user. The user opens the URL in a browser.
+
+### All providers
+
+All providers write the same `ApprovalRecord` to the `PlanStore`. The executor does not care which provider produced the approval.
+
+## 10. Approval UI security -- local demo vs production
 
 The bundled review UI is intentionally minimal and suitable for localhost demo only.
 
@@ -116,7 +136,7 @@ Before exposing it remotely, add:
 
 Do not deploy the local review server publicly as-is.
 
-## 10. Plan store requirements for production
+## 11. Plan store requirements for production
 
 In-memory storage is only for a single-process demo.
 
@@ -142,14 +162,8 @@ execution.plan_id        UNIQUE
 
 Execution should lock the plan row to prevent two concurrent calls from executing twice.
 
-## 11. Idempotency
+## 12. Idempotency
 
-The starter does not claim `execute_plan` is idempotent.
+The starter does not claim `approve_and_execute_plan` is idempotent.
 
 Production should add an idempotency key derived from `plan.id` and enforce one execution attempt for non-repeatable operations. For DevPanel operations that expose an activity/task ID, store it and resume verification rather than issuing the mutation again.
-
-## 12. MCP Elicitation option
-
-MCP 2025-11-25 defines user elicitation with `accept`, `decline`, and `cancel`. It is a good future approval-provider option when the target MCP host supports it.
-
-Keep elicitation as a UI/provider layer only. The authorization fact must still be written to the same server-side approval record and bound to the plan hash.

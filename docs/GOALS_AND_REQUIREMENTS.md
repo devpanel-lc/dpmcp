@@ -4,13 +4,13 @@
 
 Build a DevPanel MCP server that lets an AI assistant help a user operate DevPanel applications while keeping the human in control of every state-changing action.
 
-The MVP should demonstrate that a user can describe an operational goal in natural language, allow the agent to inspect DevPanel, receive a concrete plan, verify the plan, approve it, and only then permit execution.
+The MVP should demonstrate that a user can describe an operational goal in natural language, allow the agent to inspect DevPanel, receive a concrete plan, verify the plan, approve it inline via MCP client-native Elicitation, and only then permit execution.
 
 The goal is **not** to expose every DevPanel REST endpoint as an MCP tool.
 
 ## 2. Primary MVP user story
 
-> As a DevPanel user, I can ask an AI assistant to create or manage an application. The assistant first gathers the current state and prepares a detailed change plan. I review the exact target and steps. Nothing changes until I explicitly approve that immutable plan. The system revalidates the state immediately before execution, performs only the approved operations, verifies the result, and records what happened.
+> As a DevPanel user, I can ask an AI assistant to create or manage an application. The assistant first gathers the current state and prepares a detailed change plan. I review the exact target and steps inside my MCP client. Nothing changes until I explicitly approve that immutable plan via Form Elicitation or external review. The system revalidates the state immediately before execution, performs only the approved operations, verifies the result, and records what happened.
 
 ## 3. MVP capabilities
 
@@ -65,10 +65,10 @@ A plan must include:
 Approval must contain the exact `planHash` it authorizes.
 
 ### FR-5 -- LLM cannot self-approve
-No MCP tool may accept a boolean or string that the model can use to assert human approval.
+No MCP tool may accept a boolean or string that the model can use to assert human approval. Approval is obtained through MCP Elicitation or external review UI.
 
-### FR-6 -- Explicit human review surface
-The MVP provides a local review URL showing the exact plan and Approve/Reject controls.
+### FR-6 -- Inline approval via Elicitation
+The primary approval mechanism is MCP Form Elicitation -- a native approve/decline dialog inside the MCP client. Fallback: URL Elicitation, then external HTTP review page.
 
 ### FR-7 -- Revalidation
 Before any mutation, the executor must compare current DevPanel state with the plan preconditions.
@@ -77,7 +77,7 @@ Before any mutation, the executor must compare current DevPanel state with the p
 If relevant state changed, execution must stop and mark the plan `STALE`. A new plan must be generated and approved.
 
 ### FR-9 -- One mutation gateway
-Only `devpanel_execute_plan` may call mutating methods on the DevPanel client.
+Only `devpanel_approve_and_execute_plan` may call mutating methods on the DevPanel client.
 
 ### FR-10 -- Result verification
 After execution, the MCP server must verify or re-read enough state to report the outcome. The MVP performs basic verification; production can add stronger per-action postconditions.
@@ -100,7 +100,7 @@ Store plan, approval, execution timestamps, result/error, and actor identity.
 Execution must use the stored plan, not arguments reconstructed from the conversation.
 
 ### NFR-4 -- MCP-host independent approval
-The MVP approval gate works even when a client does not implement MCP Elicitation.
+The MVP approval gate works with multiple approval providers: Form Elicitation (primary), URL Elicitation (fallback), External URL (last resort).
 
 ### NFR-5 -- Extensible
 The same plan/executor architecture must later support deployments, domains, teams, workspaces, secrets, cloud resources, and blue/green workflows.
@@ -127,9 +127,9 @@ A demo is successful when all of these work:
 
 1. AI lists an existing application.
 2. AI creates a backup plan.
-3. First execute attempt returns `APPROVAL_REQUIRED` without changing DevPanel.
-4. User reviews and approves the exact plan in the approval UI.
-5. Second execute attempt performs the change.
+3. Approve-and-execute triggers Elicitation dialog (or returns external URL).
+4. User approves the exact plan.
+5. Server revalidates and executes.
 6. A follow-up read verifies the outcome.
 7. Restore/delete demonstrate the same approval gate.
 8. Editing or changing a plan after approval is impossible.

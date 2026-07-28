@@ -24,16 +24,10 @@ Included in this starter:
 - real DevPanel adapter for documented operations
 - plan service
 - SHA-256 immutable plan hash
-- local approval UI
+- approval via Form Elicitation / URL Elicitation / External URL
 - execution gateway
 - precondition revalidation
-- one integration-style test
-
-Add during implementation:
-- more unit tests
-- normalized response schemas
-- better errors
-- mock stale-state test
+- integration-style tests covering all approval paths
 
 Exit criteria:
 - complete mock demo works with MCP Inspector
@@ -74,17 +68,7 @@ Add:
 - plan expiration worker/cleanup
 - rate limiting
 
-## Phase 4 -- MCP Elicitation approval provider
-
-When target hosts support elicitation reliably:
-- add `McpElicitationApprovalProvider`
-- present plan summary in client UI
-- preserve server-side hash-bound ApprovalRecord
-- keep web review as fallback or for high-risk operations
-
-Do not move authorization state into model-visible conversation text.
-
-## Phase 5 -- Application management expansion
+## Phase 4 -- Application management expansion
 
 Candidate plan actions:
 - pause/resume
@@ -103,7 +87,7 @@ Before each addition:
 - define postconditions
 - define rollback/recovery
 
-## Phase 6 -- Deployment domain
+## Phase 5 -- Deployment domain
 
 Add:
 - create deployment
@@ -116,7 +100,7 @@ Add:
 
 Production switchover should be HIGH risk and always require explicit approval.
 
-## Phase 7 -- Broader DevPanel MCP
+## Phase 6 -- Broader DevPanel MCP
 
 Reuse the same ChangePlan abstraction for:
 - workspace lifecycle

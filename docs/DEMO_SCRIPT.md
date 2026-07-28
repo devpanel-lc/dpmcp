@@ -6,6 +6,8 @@ Show one idea clearly:
 
 > The AI can operate DevPanel, but it cannot make a DevPanel change until the user approves the exact plan.
 
+Approval happens **inside the MCP client** via Form Elicitation when supported, or via external URL as fallback.
+
 Do not spend the demo showing individual REST endpoints.
 
 ## Scene 1 -- Inspect
@@ -50,60 +52,41 @@ Talking point:
 
 > Notice that no backup exists yet. The assistant has only created a plan.
 
-## Scene 3 -- Attempt execution
+## Scene 3 -- Approve and execute
 
 Agent calls:
 
 ```text
-devpanel_execute_plan(planId)
+devpanel_approve_and_execute_plan(planId)
 ```
 
-Expected:
+**With Elicitation (primary flow):**
 
-```text
-APPROVAL_REQUIRED
-```
+A native approve/decline dialog appears inside the MCP client. The dialog shows:
+- Plan summary
+- Risk level
+- Planned operations
+- Plan ID and hash
 
-Show approval URL.
+User clicks **Approve**.
 
 Talking point:
 
-> The model cannot pass `approved=true`; the server does not accept such an argument.
+> The approval dialog is native to the MCP client. The user never leaves their IDE/chat.
 
-## Scene 4 -- Human review
+**Without Elicitation (fallback):**
 
-Open approval URL.
+An external review URL is returned. User opens it in a browser.
 
-Show:
-- summary
-- risk
-- target
-- steps
-- expected result
-- rollback
-- hash
+## Scene 4 -- Execute
 
-Click **Approve exact plan**.
+After approval:
+- Server revalidates application fingerprint
+- Mutation runs
+- Result stored
+- Status `SUCCEEDED`
 
-Talking point:
-
-> This approval is stored against the exact SHA-256 plan hash.
-
-## Scene 5 -- Execute
-
-Agent calls again:
-
-```text
-devpanel_execute_plan(samePlanId)
-```
-
-Expected:
-- executor revalidates application fingerprint
-- mutation runs
-- result stored
-- status `SUCCEEDED`
-
-## Scene 6 -- Verify
+## Scene 5 -- Verify
 
 User:
 
@@ -117,7 +100,7 @@ devpanel_list_backups
 
 Show new backup.
 
-## Scene 7 -- High-risk example
+## Scene 6 -- High-risk example
 
 User:
 
@@ -145,11 +128,23 @@ This is a strong proof that approval is not a blanket permission to perform what
 0:00  List existing apps
 0:30  Ask AI to back one up
 1:00  AI produces plan -- no mutation
-1:30  Execute attempt returns approval required
-2:00  Review exact plan in browser
-2:45  Approve
-3:00  Execute same plan
-3:45  Verify backup
-4:15  Show delete plan as HIGH risk
-4:45  Explain same architecture extends to deployments/domains/cloud
+1:30  Approve and execute via Form Elicitation (or external URL)
+2:00  Verify backup exists
+2:30  Show delete plan as HIGH risk
+3:00  Explain same architecture extends to deployments/domains/cloud
+```
+
+## Fallback demo (no Elicitation)
+
+If your MCP client does not support Form Elicitation:
+
+```text
+0:00  List existing apps
+0:30  Ask AI to back one up
+1:00  AI produces plan
+1:30  devpanel_approve_and_execute_plan returns approval URL
+2:00  Open URL in browser, review plan
+2:30  Click Approve exact plan
+3:00  Return to AI, execute same plan
+3:30  Verify backup exists
 ```

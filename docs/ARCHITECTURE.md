@@ -6,7 +6,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │ MCP Host / LLM                                               │
 │                                                             │
-│  read tools      plan tools           execute_plan           │
+│  read tools      plan tools       approve_and_execute_plan   │
 └────────┬─────────────┬──────────────────────┬────────────────┘
          │             │                      │
          ▼             ▼                      ▼
@@ -26,7 +26,13 @@
 │                         ├── revalidate preconditions         │
 │                         └── execute approved action          │
 │                                                             │
-│ Approval Review HTTP UI ───────────────► PlanStore           │
+│ ApprovalService                                             │
+│      │                                                      │
+│      ├── Form Elicitation (native client dialog)            │
+│      ├── URL Elicitation (client opens URL)                 │
+│      └── External URL fallback (HTTP review server)         │
+│                                                             │
+│ External Review HTTP UI ───────────────► PlanStore           │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
@@ -84,15 +90,14 @@ Responsibilities:
 
 It must not call mutating DevPanel methods.
 
-### Approval UI / Approval Provider
+### ApprovalService
 
 Responsibilities:
-- present exact plan to human
-- allow approve or reject
-- bind decision to plan hash
-- record actor/time/source
-
-MVP uses a local HTTP review page because it works independently of MCP-host elicitation support.
+- route approval through the best available provider
+- Form Elicitation (native client dialog) when supported
+- URL Elicitation (client opens URL) when supported
+- External URL fallback (HTTP review page) as last resort
+- record ApprovalRecord bound to plan hash
 
 ### ExecutionService
 
@@ -128,9 +133,9 @@ PENDING_APPROVAL
    │
    └──────── Approve ──────► APPROVED
                                 │
-                                │ execute_plan
+                                │ devpanel_approve_and_execute_plan
                                 ▼
-                          Revalidate state
+                          VALIDATING (revalidate state)
                            │            │
                         changed       valid
                            │            │
@@ -141,8 +146,6 @@ PENDING_APPROVAL
                               ▼                   ▼
                           SUCCEEDED             FAILED
 ```
-
-A production implementation may add `DRAFT`, `READY_FOR_REVIEW`, `CANCELLED`, and explicit retry states.
 
 ## 5. Plan integrity
 
@@ -176,24 +179,36 @@ Immediately before mutation the executor reads the application again. A mismatch
 
 As the MCP grows, preconditions should become action-specific and include stronger revision/version identifiers exposed by DevPanel.
 
-## 7. Approval provider evolution
+## 7. Approval provider architecture
 
-The architecture should use an `ApprovalProvider` abstraction in production. Possible implementations:
+The approval system uses a provider-based architecture:
 
 ```text
-Local Review UI     -- current starter/demo
-MCP Elicitation     -- client-rendered approval when host supports it
-Enterprise Web UI   -- authenticated dashboard / SSO
-Slack approval      -- later, only with strong actor binding
+Form Elicitation   -- primary: native approve/decline dialog inside MCP client
+URL Elicitation    -- fallback: client prompts user to open review URL
+External URL       -- last resort: HTTP review page at localhost:8787
 ```
 
 All providers write the same ApprovalRecord. The executor does not care which UI produced it.
+
+### Capability-based selection
+
+```text
+Does client support Form Elicitation?
+  YES → native approve/decline dialog
+  NO  → Does client support URL Elicitation?
+           YES → client opens review URL
+           NO  → external HTTP review page
+```
+
+`APPROVAL_MODE=auto` triggers this negotiation. Explicit modes (`form`, `url`, `external`) override for testing.
 
 ## 8. Transport evolution
 
 ### v0.1
 - MCP over stdio
-- local approval HTTP server
+- Form Elicitation approval (primary)
+- External approval HTTP server (fallback)
 - in-memory plan store
 
 ### hosted MVP

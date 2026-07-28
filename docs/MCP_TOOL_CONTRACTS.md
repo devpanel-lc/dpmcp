@@ -16,7 +16,7 @@ Good:
 ```text
 devpanel_plan_create_application
 devpanel_plan_restore_application
-devpanel_execute_plan
+devpanel_approve_and_execute_plan
 ```
 
 ## Read tools
@@ -143,7 +143,7 @@ Returns status, hash, target, steps, approval and execution result.
 
 ## Single mutation gateway
 
-### `devpanel_execute_plan`
+### `devpanel_approve_and_execute_plan`
 
 Input:
 
@@ -153,24 +153,44 @@ Input:
 
 No other fields are accepted.
 
-Possible outcome before approval:
+This tool handles both approval and execution:
+
+1. If the plan already has a valid approval record, it executes immediately.
+2. If no approval exists, it requests human approval via MCP Elicitation (Form or URL) or returns an external URL.
+3. If the human approves, it revalidates preconditions and executes.
+4. If the human declines or cancels, it returns the appropriate status.
+
+Possible outcomes:
 
 ```json
 {
-  "state":"APPROVAL_REQUIRED",
-  "approval_url":"http://127.0.0.1:8787/review/plan_..."
+  "state": "APPROVAL_REQUIRED",
+  "approval_method": "external_url",
+  "approval_url": "http://127.0.0.1:8787/review/plan_..."
 }
 ```
 
-After the human approves, call the same tool again with the same plan ID.
+```json
+{
+  "state": "EXECUTED",
+  "plan": {...},
+  "result": {...}
+}
+```
 
-The executor:
-- verifies plan hash
-- verifies TTL
-- verifies approval hash
-- revalidates DevPanel state
-- performs the stored operation
-- stores execution result
+```json
+{
+  "state": "REJECTED",
+  "plan": {...}
+}
+```
+
+```json
+{
+  "state": "STALE",
+  "plan": {...}
+}
+```
 
 ## Future tools
 

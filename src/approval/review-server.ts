@@ -32,12 +32,20 @@ export function startApprovalReviewServer(store: PlanStore): void {
         const params = new URLSearchParams(body);
         const decision = params.get('decision');
         if (decision !== 'approve' && decision !== 'reject') return send(res, 400, 'Invalid decision');
+
+        if (new Date(plan.expiresAt).getTime() <= Date.now()) {
+          return send(res, 400, 'Plan has expired. Create a new plan.');
+        }
+        if (plan.approval && plan.approval.decision === 'APPROVE') {
+          return send(res, 400, 'Plan is already approved.');
+        }
+
         await store.setApproval(plan.id, {
           decision: decision === 'approve' ? 'APPROVE' : 'REJECT',
           planHash: plan.hash,
           approvedAt: new Date().toISOString(),
           approvedBy: 'local-review-user',
-          source: 'review-ui',
+          approvalMethod: 'EXTERNAL_URL',
         });
         return html(res, `<h1>${decision === 'approve' ? 'Approved' : 'Rejected'}</h1><p>You may return to your MCP client.</p>`);
       }

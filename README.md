@@ -22,7 +22,24 @@ Plan-only:
 - delete application
 
 Execute:
-- `devpanel_execute_plan(planId)` -- the only MCP tool allowed to mutate DevPanel
+- `devpanel_approve_and_execute_plan(planId)` -- the only MCP tool allowed to mutate DevPanel
+
+## Approval priority
+
+1. **Form Elicitation** -- native approve/decline dialog inside the MCP client
+2. **URL Elicitation** -- client prompts user to open a review URL
+3. **External approval URL** -- model returns a URL for the user to open in a browser
+
+Set `APPROVAL_MODE` to control which method is used:
+
+```env
+APPROVAL_MODE=auto     # capability negotiation (default)
+APPROVAL_MODE=form     # force Form Elicitation
+APPROVAL_MODE=url      # force URL Elicitation
+APPROVAL_MODE=external # force external HTTP review page
+```
+
+`auto` means capability-based selection, NOT automatic approval.
 
 ## Workflow
 
@@ -33,19 +50,19 @@ Read current DevPanel state
    ↓
 Create immutable ChangePlan
    ↓
-PENDING_APPROVAL
+Model presents plan to user
    ↓
-User opens review UI
+devpanel_approve_and_execute_plan(planId)
    ↓
-Approve exact plan hash / Reject
+Server requests human approval (Form Elicitation / URL / External)
    ↓
-execute_plan(planId)
+Human approves exact plan hash
    ↓
-Revalidate preconditions
+Server revalidates preconditions
    ↓
-Execute DevPanel REST call(s)
+Server executes mutation
    ↓
-Verify + audit result
+Server returns result inline
 ```
 
 ## Why approval is not a tool argument
@@ -80,11 +97,9 @@ Suggested demo:
 
 1. `devpanel_list_applications`
 2. `devpanel_plan_backup_application` with `Existing Demo`
-3. `devpanel_execute_plan` with returned plan ID
-4. Open the returned `approval_url`
-5. Review and click **Approve exact plan**
-6. Call `devpanel_execute_plan` again with the same `planId`
-7. `devpanel_list_backups` to verify the result
+3. `devpanel_approve_and_execute_plan` with returned plan ID
+4. Approve via Form Elicitation dialog (or open the returned `approval_url`)
+5. `devpanel_list_backups` to verify the result
 
 ## Real DevPanel mode
 
@@ -128,7 +143,7 @@ Do not infer this contract from field names.
 - Approval must bind to `plan.hash`.
 - Executor re-reads DevPanel state immediately before mutation.
 - A changed target makes the plan `STALE`; the user must review a new plan.
-- Only `devpanel_execute_plan` may call mutating DevPanel client methods.
+- Only `devpanel_approve_and_execute_plan` may call mutating DevPanel client methods.
 - Secrets remain server-side and are never tool arguments.
 - Production should replace `InMemoryPlanStore` with a durable transactional store.
 
