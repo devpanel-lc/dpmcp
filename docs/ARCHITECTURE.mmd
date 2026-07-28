@@ -1,0 +1,19 @@
+flowchart TD
+    U[User Intent] --> H[MCP Host / LLM]
+    H --> R[Read Tools]
+    H --> P[Plan Tools]
+    R --> DPClient[DevPanelClient]
+    DPClient --> DP[DevPanel API]
+    P --> PS[PlanService]
+    PS --> DPClient
+    PS --> Store[(PlanStore)]
+    Store --> Review[Human Review UI]
+    Review -->|Approve exact plan hash| Store
+    Review -->|Reject| Store
+    H --> E[devpanel_execute_plan]
+    E --> ES[ExecutionService]
+    ES --> Store
+    ES -->|Revalidate| DPClient
+    ES -->|Only if approved + unchanged| DPClient
+    DPClient --> DP
+    ES --> Store

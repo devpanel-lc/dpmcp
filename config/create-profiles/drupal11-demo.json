@@ -1,0 +1,20 @@
+{
+  "id": "drupal11-demo",
+  "verified": false,
+  "notes": "Replace this file with a payload captured from a successful DevPanel UI Create Application request before enabling real create.",
+  "endpoint": "/api/v2/workspaces/{workspaceId}/projects",
+  "method": "POST",
+  "payload": {
+    "repositoryId": "{{repositoryId}}",
+    "repositoryOwner": "{{repositoryOwner}}",
+    "repositoryName": "{{repositoryName}}",
+    "projectType": "{{projectType}}",
+    "repositoryType": "{{repositoryType}}",
+    "instances": ["{{branch}}"],
+    "repositoryProvider": "{{repositoryProvider}}",
+    "isUsePersonalToken": false,
+    "isUseRepositoryToken": false,
+    "repositoryToken": ""
+  },
+  "warning": "The OpenAPI confirms these fields exist, but does NOT document the semantics of instances[] or the create-project response. Verify both from the browser Network tab."
+}
