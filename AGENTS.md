@@ -2,7 +2,7 @@
 
 ## What this is
 
-MCP server (TypeScript, stdio transport) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan via the review UI**.
+MCP server (TypeScript, stdio transport) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan via MCP client-native elicitation or external review UI**.
 
 ## Commands
 
@@ -26,40 +26,82 @@ Default `DP_MODE=mock` requires no external services. Copy `.env.example` → `.
 
 Real CREATE is gated behind `DP_ENABLE_REAL_CREATE=true` — see `config/create-profiles/drupal11-demo.json`. The profile's `verified` field must be `true` before enabling; do not guess the create-project response contract.
 
+## Approval modes
+
+`APPROVAL_MODE` controls how human approval is obtained:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Capability negotiation: Form Elicitation → URL Elicitation → External URL |
+| `form` | Force Form Elicitation (native client dialog). Falls back to cancelled if unsupported. |
+| `url` | Force URL Elicitation (client prompts user to open URL). Falls back to cancelled if unsupported. |
+| `external` | Force external HTTP review page (`http://127.0.0.1:8787/review/{planId}`) |
+
+`auto` means capability-based selection, NOT automatic approval. Plans always require explicit human approval.
+
 ## Architecture (non-obvious)
 
 ```
-src/index.ts          → wires client, store, approval server, stdio transport
-src/server.ts         → builds McpServer, delegates to registerTools
-src/tools/register.ts → all MCP tools; only devpanel_execute_plan mutates DevPanel
-src/services/         → PlanService (creates plans), ExecutionService (executes with preconditions)
-src/clients/          → DevPanelClient interface + MockDevPanelClient + RealDevPanelClient
-src/stores/           → InMemoryPlanStore (swap for durable store in prod)
-src/approval/         → review-server.ts serves the human approval UI
-src/domain/types.ts   → ChangePlan, ApprovalRecord, PlanStatus
-src/utils/            → hash.ts (SHA-256 plan fingerprint), fingerprint.ts (app state fingerprint)
+src/index.ts                      → wires client, store, approval server, stdio transport
+src/server.ts                     → builds McpServer, delegates to registerTools
+src/tools/register.ts             → all MCP tools; devpanel_approve_and_execute_plan triggers elicitation
+src/services/plan-service.ts      → creates immutable ChangePlan objects
+src/services/execution-service.ts → validates, revalidates, executes approved plans
+src/services/application-resolver.ts → resolves app by ID or fuzzy search
+src/clients/                      → DevPanelClient interface + MockDevPanelClient + RealDevPanelClient
+src/stores/plan-store.ts          → InMemoryPlanStore (swap for durable store in prod)
+src/approval/approval-service.ts  → orchestrates approval via elicitation providers
+src/approval/providers/           → form-elicitation.ts, url-elicitation.ts, external-url.ts
+src/approval/review-server.ts     → HTTP server for external URL fallback review UI
+src/domain/types.ts               → ChangePlan, ApprovalRecord, PlanStatus, ElicitationResult
+src/utils/                        → hash.ts (SHA-256 plan fingerprint), fingerprint.ts (app state fingerprint)
 ```
 
 ### Key design constraints
 
 - **stdout is reserved for MCP** when using stdio — all logs go to `console.error`.
-- `devpanel_execute_plan` is the **only** tool that may call mutating DevPanel client methods.
-- The executor **never** accepts `approved: true` or any mutable action parameters — approval is bound to `plan.hash` via a separate `ApprovalRecord`.
+- `devpanel_approve_and_execute_plan` is the **only** tool that may call mutating DevPanel client methods.
+- The executor **never** accepts `approved: true` or any mutable action parameters — approval is bound to `plan.hash` via an `ApprovalRecord` written through MCP Elicitation (human response) or external review UI.
 - Plans become `STALE` when preconditions fail (app fingerprint changed, backup disappeared) or TTL expires (`PLAN_TTL_SECONDS`, default 900s).
 - The executor re-reads DevPanel state immediately before mutation (revalidation step).
 - Plans are immutable after review begins; plan hash is computed by `hashPlan()`.
 
+### Approval flow
+
+```
+Model creates plan (plan_* tool)
+  ↓
+Model calls devpanel_approve_and_execute_plan(planId)
+  ↓
+Server checks: approval exists? → execute if approved
+  ↓
+No approval → ApprovalService.requestApproval()
+  ↓
+  ├── Form Elicitation (native client dialog)
+  ├── URL Elicitation (client opens URL)
+  └── External URL fallback (model returns URL)
+  ↓
+Human approves → ApprovalRecord written to store
+  ↓
+Server revalidates preconditions
+  ↓
+Server executes mutation
+  ↓
+Server returns result
+```
+
 ## Testing
 
 - Framework: Vitest (`vitest run`)
-- Single test file: `tests/plan-flow.test.ts` — tests the plan → approval → execute flow against `MockDevPanelClient` and `InMemoryPlanStore`.
+- Single test file: `tests/plan-flow.test.ts` — tests plan → approval → execute flow, elicitation paths, security bypass attempts, stale/expired plans, and hash integrity.
 - No fixtures or external services required.
 
 ## Gotchas
 
 - `tsc` config: `"module": "NodeNext"` with ESM (`"type": "module"` in package.json). Source uses `.js` extensions in imports — keep them.
-- Zod 4.x (not 3.x) — schemas differ slightly (`z.string().min(1)` etc. but check Zod 4 docs for any API changes).
+- Zod 4.x (not 3.x) — schemas differ slightly.
 - MCP SDK is pinned to `@modelcontextprotocol/sdk@1.30.0` (stable v1 line, not v2 beta).
 - No lockfile checked in — run `npm install` before typecheck/test if `node_modules/` is missing.
 - Recommended Node version: 24 (see `.nvmrc`).
 - `config/create-profiles/drupal11-demo.json` contains a template payload with `{{placeholders}}` — not valid JSON for direct use; it is documentation of the expected shape.
+- MCP SDK has no "MCP Apps" or tool-hiding capability. Form Elicitation is the closest inline approval mechanism.

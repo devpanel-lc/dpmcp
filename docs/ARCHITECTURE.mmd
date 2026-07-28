@@ -7,10 +7,14 @@ flowchart TD
     P --> PS[PlanService]
     PS --> DPClient
     PS --> Store[(PlanStore)]
-    Store --> Review[Human Review UI]
-    Review -->|Approve exact plan hash| Store
-    Review -->|Reject| Store
-    H --> E[devpanel_execute_plan]
+    H --> E[devpanel_approve_and_execute_plan]
+    E --> AS[ApprovalService]
+    AS -->|Form Elicitation| FE[Native Client Dialog]
+    AS -->|URL Elicitation| UE[Client Opens URL]
+    AS -->|External URL| EU[HTTP Review Server]
+    FE -->|Human Approves| Store
+    UE -->|Human Approves| Store
+    EU -->|Human Approves| Store
     E --> ES[ExecutionService]
     ES --> Store
     ES -->|Revalidate| DPClient
