@@ -37,7 +37,7 @@ function planSummary(plan: ChangePlan): string {
   return lines.join('\n');
 }
 
-export interface FormApprovalResult {
+interface FormApprovalResult {
   method: ApprovalMethod;
   decision: 'APPROVE' | 'REJECT';
   cancelled?: boolean;

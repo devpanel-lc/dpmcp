@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "inspector": "npx @modelcontextprotocol/inspector npx tsx src/index.ts"
+    "inspector": "npx @modelcontextprotocol/inspector npx tsx src/index.ts",
+    "inspector:http": "npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:3100 --header 'Authorization: Bearer dev-token'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -15,11 +15,13 @@ function firstString(obj: Record<string, unknown>, ...keys: string[]): string | 
 }
 
 export class RealDevPanelClient implements DevPanelClient {
+  constructor(private readonly accessToken: string) {}
+
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, '')}${path}`, {
       ...init,
       headers: {
-        authorization: `Bearer ${config.accessToken}`,
+        authorization: `Bearer ${this.accessToken}`,
         'content-type': 'application/json',
         ...(init.headers ?? {}),
       },

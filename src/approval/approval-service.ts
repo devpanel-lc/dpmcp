@@ -1,11 +1,11 @@
-import type { ChangePlan, ApprovalMethod, ApprovalRecord, ElicitationResult } from '../domain/types.js';
+import type { ChangePlan, ApprovalMethod, ApprovalRecord } from '../domain/types.js';
 import type { PlanStore } from '../stores/plan-store.js';
 import { config } from '../config.js';
 import { requestFormApproval, type ElicitFn } from './providers/form-elicitation.js';
 import { requestUrlApproval, type UrlElicitFn } from './providers/url-elicitation.js';
 import { getExternalApprovalUrl } from './providers/external-url.js';
 
-export type ApprovalOutcome =
+type ApprovalOutcome =
   | { status: 'approved'; record: ApprovalRecord }
   | { status: 'declined'; approvalMethod: ApprovalMethod }
   | { status: 'cancelled' }
@@ -18,7 +18,7 @@ export class ApprovalService {
     private readonly urlElicitationFn: UrlElicitFn | undefined,
   ) {}
 
-  async requestApproval(plan: ChangePlan): Promise<ApprovalOutcome> {
+  async requestApproval(plan: ChangePlan, approvedBy = 'human'): Promise<ApprovalOutcome> {
     const mode = config.approvalMode;
 
     if (mode === 'form' || mode === 'auto') {
@@ -27,7 +27,7 @@ export class ApprovalService {
           const result = await requestFormApproval(plan, this.elicitationFn);
           if (result.cancelled) return { status: 'cancelled' };
           if (result.decision === 'APPROVE') {
-            const record = await this.recordApproval(plan, 'APPROVE', result.method);
+            const record = await this.recordApproval(plan, 'APPROVE', result.method, approvedBy);
             return { status: 'approved', record };
           }
           return { status: 'declined', approvalMethod: result.method };
@@ -45,7 +45,7 @@ export class ApprovalService {
           const reviewUrl = `${config.approvalPublicBaseUrl}/review/${encodeURIComponent(plan.id)}`;
           const result = await requestUrlApproval(plan, this.urlElicitationFn, reviewUrl);
           if (result.decision === 'APPROVE') {
-            const record = await this.recordApproval(plan, 'APPROVE', result.method);
+            const record = await this.recordApproval(plan, 'APPROVE', result.method, approvedBy);
             return { status: 'approved', record };
           }
           return { status: 'declined', approvalMethod: result.method };
@@ -65,12 +65,13 @@ export class ApprovalService {
     plan: ChangePlan,
     decision: 'APPROVE' | 'REJECT',
     method: ApprovalMethod,
+    approvedBy = 'human',
   ): Promise<ApprovalRecord> {
     const record: ApprovalRecord = {
       decision,
       planHash: plan.hash,
       approvedAt: new Date().toISOString(),
-      approvedBy: 'human',
+      approvedBy,
       approvalMethod: method,
     };
     await this.store.setApproval(plan.id, record);

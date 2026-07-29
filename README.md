@@ -85,7 +85,7 @@ npm install
 npm run dev
 ```
 
-In a second terminal:
+By default this starts in **stdio** transport with `DP_MODE=mock`. In a second terminal:
 
 ```bash
 npm run inspector
@@ -136,6 +136,28 @@ Do not infer this contract from field names.
 - `docs/DEMO_SCRIPT.md`
 - `docs/IMPLEMENTATION_ROADMAP.md`
 
+## HTTP transport mode (per-user Bearer tokens)
+
+Set `DP_TRANSPORT=http` to run the MCP server over Streamable HTTP instead of stdio. Each request must carry an `Authorization: Bearer <token>` header. The token serves dual purpose:
+
+1. **Authentication** -- the token is forwarded to the DevPanel API as the `accessToken` for each request
+2. **Plan ownership** -- the SHA-256 hash of the token becomes the `ownerId` on every plan created by that caller
+
+```env
+DP_TRANSPORT=http
+DP_HTTP_HOST=127.0.0.1
+DP_HTTP_PORT=3100
+DP_HTTP_TLS_ENABLED=false  # set true + provide cert/key for production
+DP_HTTP_CERT_PATH=
+DP_HTTP_KEY_PATH=
+```
+
+The HTTP server binds to the configured host/port and accepts JSON-RPC requests using the MCP Streamable HTTP protocol. Plans created by one user cannot be approved or executed by a different token (owner identity is checked at execution time).
+
+**Security warning:** Without TLS (`DP_HTTP_TLS_ENABLED=false`), Bearer tokens are transmitted in cleartext. For production, either enable TLS with `DP_HTTP_TLS_ENABLED=true` + `DP_HTTP_CERT_PATH`/`DP_HTTP_KEY_PATH`, or run behind a TLS-terminating reverse proxy (nginx, Cloudflare Tunnel, etc.). When binding to `127.0.0.1`, traffic is local-only and does not cross the network.
+
+When `DP_TRANSPORT=http`, the `DP_MODE` setting is ignored (real mode is implicit since mock mode only applies to stdio local development).
+
 ## Important implementation constraints
 
 - stdout is reserved for MCP when using stdio -- logs use `console.error`.
@@ -155,4 +177,4 @@ The starter uses the stable TypeScript MCP SDK package line rather than the curr
 - `zod@4.4.3`
 - Node.js 24+
 
-For local integrations, use stdio. For a hosted multi-user server, add Streamable HTTP after authentication and durable plan storage are implemented.
+For single-user setups, use stdio transport (`DP_TRANSPORT=stdio`). For multi-user hosted deployments, use HTTP transport with per-user Bearer tokens (`DP_TRANSPORT=http`).

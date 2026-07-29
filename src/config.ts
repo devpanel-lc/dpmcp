@@ -5,6 +5,12 @@ function env(name: string, fallback?: string): string {
 }
 
 export const config = {
+  transport: env('DP_TRANSPORT', 'stdio') as 'stdio' | 'http',
+  httpHost: env('DP_HTTP_HOST', '127.0.0.1'),
+  httpPort: Number(env('DP_HTTP_PORT', '3100')),
+  httpTlsEnabled: env('DP_HTTP_TLS_ENABLED', 'false') === 'true',
+  httpCertPath: env('DP_HTTP_CERT_PATH', ''),
+  httpKeyPath: env('DP_HTTP_KEY_PATH', ''),
   mode: env('DP_MODE', 'mock') as 'mock' | 'real',
   apiBaseUrl: env('DP_API_BASE_URL', 'http://localhost.invalid'),
   accessToken: process.env.DP_ACCESS_TOKEN ?? '',

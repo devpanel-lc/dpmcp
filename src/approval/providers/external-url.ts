@@ -1,6 +1,6 @@
 import type { ChangePlan, ApprovalMethod } from '../../domain/types.js';
 
-export interface ExternalUrlResult {
+interface ExternalUrlResult {
   method: ApprovalMethod;
   decision: 'APPROVE' | 'REJECT';
   approvalUrl: string;

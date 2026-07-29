@@ -22,10 +22,6 @@ export class ExecutionService {
     return this.performExecution(plan);
   }
 
-  async revalidatePlan(plan: ChangePlan): Promise<void> {
-    await this.revalidate(plan);
-  }
-
   private async revalidate(plan: ChangePlan): Promise<void> {
     await this.store.setStatus(plan.id, 'VALIDATING');
     if (!plan.preconditions.applicationId) return;
@@ -82,9 +78,4 @@ export class ExecutionService {
     if (hashPlan(plan) !== plan.hash) throw new Error('Plan integrity check failed');
   }
 
-  private async requirePlan(id: string): Promise<ChangePlan> {
-    const plan = await this.store.get(id);
-    if (!plan) throw new Error(`Plan not found: ${id}`);
-    return plan;
-  }
 }

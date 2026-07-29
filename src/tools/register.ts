@@ -8,6 +8,7 @@ import { ApplicationResolver } from '../services/application-resolver.js';
 import { ApprovalService } from '../approval/approval-service.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
+import { currentOwnerId } from '../clients/token-scoped-client.js';
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
 
@@ -67,25 +68,25 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
       branch: z.string().default('main'), projectType: z.string().min(1), repositoryType: z.string().optional(),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async (args) => text({ plan: await plans.createApplicationPlan(args), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+  }, async (args) => text({ plan: await plans.createApplicationPlan(args, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
     inputSchema: { application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application }) => text({ plan: await plans.backupPlan(application) }));
+  }, async ({ application }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_restore_application', {
     description: 'PLAN ONLY. Create a proposed restore plan for a specific or latest backup. Does not change DevPanel.',
     inputSchema: { application: z.string().min(1), backupId: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, backupId }) => text({ plan: await plans.restorePlan(application, backupId) }));
+  }, async ({ application, backupId }) => text({ plan: await plans.restorePlan(application, backupId, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_delete_application', {
     description: 'PLAN ONLY. Create a proposed deletion plan after reading current application and backup state. Does not change DevPanel.',
     inputSchema: { application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application }) => text({ plan: await plans.deletePlan(application) }));
+  }, async ({ application }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
 
   server.registerTool('devpanel_get_plan', {
     description: 'Read-only. Get an immutable change plan, its approval status, and any execution result.',
@@ -98,8 +99,13 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     inputSchema: { planId: z.string().min(1) },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async ({ planId }) => {
+    const caller = currentOwnerId();
     const plan = await store.get(planId);
     if (!plan) return errorText('PLAN_NOT_FOUND', `Plan not found: ${planId}`);
+
+    if (plan.ownerId !== caller) {
+      return errorText('PLAN_OWNER_MISMATCH', 'Plan was created by a different user.', { plan, caller });
+    }
 
     if (plan.status === 'STALE') {
       return errorText('PLAN_STALE', 'Plan is stale. The target has changed since planning. Create a new plan.', { plan });
@@ -126,7 +132,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
       }
     }
 
-    const outcome = await approvalService.requestApproval(plan);
+    const outcome = await approvalService.requestApproval(plan, caller);
 
     if (outcome.status === 'approved') {
       const refreshedPlan = await store.get(planId);
@@ -143,7 +149,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     if (outcome.status === 'declined') {
       await store.setApproval(planId, {
         decision: 'REJECT', planHash: plan.hash, approvedAt: new Date().toISOString(),
-        approvedBy: 'human', approvalMethod: outcome.approvalMethod,
+        approvedBy: caller, approvalMethod: outcome.approvalMethod,
       });
       return errorText('APPROVAL_REQUIRED', 'Human declined the plan.', { plan });
     }
