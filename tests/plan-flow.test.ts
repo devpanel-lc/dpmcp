@@ -5,6 +5,7 @@ import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
 import { ApprovalService } from '../src/approval/approval-service.js';
 import { hashPlan } from '../src/utils/hash.js';
+import { currentOwnerId, TokenScopedDevPanelClient, tokenStorage } from '../src/clients/token-scoped-client.js';
 import type { ChangePlan } from '../src/domain/types.js';
 import { config } from '../src/config.js';
 
@@ -276,5 +277,64 @@ describe('plan hash integrity', () => {
     const deletePlan = await plans.deletePlan('app_demo_1');
 
     expect(backupPlan.hash).not.toBe(deletePlan.hash);
+  });
+});
+
+describe('token scoped client and owner identity', () => {
+  it('currentOwnerId() returns "local" outside token context', () => {
+    expect(currentOwnerId()).toBe('local');
+  });
+
+  it('currentOwnerId() returns SHA-256 hash inside token context', () => {
+    tokenStorage.run('test-token-123', () => {
+      const ownerId = currentOwnerId();
+      expect(ownerId).not.toBe('local');
+      expect(ownerId).toMatch(/^[a-f0-9]{64}$/);
+    });
+  });
+
+  it('currentOwnerId() returns consistent hash for same token', () => {
+    tokenStorage.run('consistent-token', () => {
+      const id1 = currentOwnerId();
+      const id2 = currentOwnerId();
+      expect(id1).toBe(id2);
+    });
+  });
+
+  it('currentOwnerId() returns different hash for different tokens', () => {
+    let idA: string;
+    let idB: string;
+    tokenStorage.run('token-a', () => { idA = currentOwnerId(); });
+    tokenStorage.run('token-b', () => { idB = currentOwnerId(); });
+    expect(idA!).not.toBe(idB!);
+  });
+
+  it('TokenScopedDevPanelClient falls back to mock outside token context', async () => {
+    const client = new TokenScopedDevPanelClient();
+    const apps = await client.listApplications();
+    expect(Array.isArray(apps)).toBe(true);
+  });
+
+  it('plan created inside token context carries ownerId', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    let plan: ChangePlan;
+    await tokenStorage.run('user-token', async () => {
+      plan = await plans.backupPlan('app_demo_1', currentOwnerId());
+    });
+
+    const expectedOwner = await tokenStorage.run('user-token', () => currentOwnerId());
+    expect(plan!.ownerId).toBe(expectedOwner);
+  });
+
+  it('plan created outside token context carries ownerId "local"', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.backupPlan('app_demo_1');
+    expect(plan.ownerId).toBe('local');
   });
 });

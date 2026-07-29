@@ -28,6 +28,7 @@ export type ErrorCode =
   | 'PLAN_REJECTED'
   | 'PLAN_ALREADY_EXECUTED'
   | 'PLAN_INTEGRITY_FAILED'
+  | 'PLAN_OWNER_MISMATCH'
   | 'APPROVAL_REQUIRED'
   | 'APPROVAL_CANCELLED'
   | 'EXECUTION_FAILED'
@@ -90,6 +91,7 @@ export interface ChangePlan {
   createdAt: string;
   expiresAt: string;
   hash: string;
+  ownerId: string;
   target: Record<string, unknown>;
   proposedInput: Record<string, unknown>;
   steps: PlanStep[];

@@ -3,7 +3,7 @@ import type { ChangePlan, ElicitationResult, ApprovalMethod } from '../../domain
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type UrlElicitFn = (...args: any[]) => Promise<ElicitationResult>;
 
-export interface UrlApprovalResult {
+interface UrlApprovalResult {
   method: ApprovalMethod;
   decision: 'APPROVE' | 'REJECT';
 }
