@@ -22,19 +22,19 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(all.filter(a => `${a.name ?? ''} ${a.hostname ?? ''} ${a.id}`.toLowerCase().includes(q)));
   }
 
-  async getApplication(id: string): Promise<ApplicationRef> {
-    const app = this.apps.get(id);
-    if (!app) throw new Error(`Application not found: ${id}`);
-    return structuredClone(app);
+  async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    const found = this.apps.get(app.id);
+    if (!found) throw new Error(`Application not found: ${app.id}`);
+    return structuredClone(found);
   }
 
-  async getApplicationActivities(id: string): Promise<unknown> {
-    await this.getApplication(id);
-    return [{ id: `activity_${id}`, status: 'SUCCESS', message: 'Mock application ready' }];
+  async getApplicationActivities(app: ApplicationRef): Promise<unknown> {
+    await this.getApplication(app);
+    return [{ id: `activity_${app.id}`, status: 'SUCCESS', message: 'Mock application ready' }];
   }
 
-  async getApplicationLogs(activityId: string): Promise<unknown> {
-    return [`[mock] logs for ${activityId}`, 'Application is healthy'];
+  async getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown> {
+    return [`[mock] logs for ${app.name ?? app.id} (${containerName ?? 'php'})`, 'Application is healthy'];
   }
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
@@ -57,7 +57,7 @@ export class MockDevPanelClient implements DevPanelClient {
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
-    await this.getApplication(app.id);
+    await this.getApplication(app);
     const backup: BackupRef = {
       id: `backup_${randomUUID().slice(0, 8)}`,
       applicationId: app.id,

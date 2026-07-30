@@ -45,13 +45,13 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     description: 'Read-only. Get activity history for an application.',
     inputSchema: { application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application }) => { const app = await resolver.resolve(application); return text(await dp.getApplicationActivities(app.id)); });
+  }, async ({ application }) => { const app = await resolver.resolve(application); return text(await dp.getApplicationActivities(app)); });
 
   server.registerTool('devpanel_get_activity_logs', {
-    description: 'Read-only. Get DevPanel logs for a known activity ID.',
-    inputSchema: { activityId: z.string().min(1) },
+    description: 'Read-only. Get HTTP access logs for an application container.',
+    inputSchema: { application: z.string().min(1), containerName: z.string().default('php'), pageSize: z.number().default(100) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ activityId }) => text(await dp.getApplicationLogs(activityId)));
+  }, async ({ application, containerName, pageSize }) => { const app = await resolver.resolve(application); return text(await dp.getApplicationLogs(app, containerName, pageSize)); });
 
   server.registerTool('devpanel_list_backups', {
     description: 'Read-only. List backups for an application.',
