@@ -78,8 +78,4 @@ export class ApprovalService {
     return record;
   }
 
-  async getApprovalStatus(planId: string): Promise<ApprovalRecord | undefined> {
-    const plan = await this.store.get(planId);
-    return plan?.approval;
-  }
 }

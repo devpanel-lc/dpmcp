@@ -27,7 +27,7 @@ describe('plan -> approval -> execute', () => {
     const approvedPlan = await store.get(plan.id)!;
     const result = await executor.executeApprovedPlan(approvedPlan!);
     expect(result.state).toBe('EXECUTED');
-    const backups = await dp.listBackups(await dp.getApplication('app_demo_1'));
+    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(1);
   });
 });
@@ -60,7 +60,7 @@ describe('elicitation approval flow', () => {
     const result = await executor.executeApprovedPlan(approvedPlan!);
     expect(result.state).toBe('EXECUTED');
 
-    const backups = await dp.listBackups(await dp.getApplication('app_demo_1'));
+    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(1);
   });
 
@@ -86,7 +86,7 @@ describe('elicitation approval flow', () => {
 
     await expect(executor.executeApprovedPlan(plan)).rejects.toThrow('Plan has not been approved');
 
-    const backups = await dp.listBackups(await dp.getApplication('app_demo_1'));
+    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(0);
   });
 
@@ -142,7 +142,7 @@ describe('security: model bypass attempts', () => {
     const plan = await plans.backupPlan('app_demo_1');
     await expect(executor.executeApprovedPlan(plan)).rejects.toThrow('Plan has not been approved');
 
-    const backups = await dp.listBackups(await dp.getApplication('app_demo_1'));
+    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(0);
   });
 
@@ -161,7 +161,7 @@ describe('security: model bypass attempts', () => {
     const approvedPlan = await store.get(plan.id)!;
     await expect(executor.executeApprovedPlan(approvedPlan!)).rejects.toThrow('Approval is not bound to the current plan hash');
 
-    const backups = await dp.listBackups(await dp.getApplication('app_demo_1'));
+    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(0);
   });
 
@@ -242,7 +242,7 @@ describe('stale and expired plans', () => {
       approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
     });
 
-    const app = await dp.getApplication('app_demo_1');
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' });
     app.status = 'DEPLOY_APPLICATION_UPDATING';
     (dp as unknown as { apps: Map<string, unknown> }).apps.set('app_demo_1', app);
 

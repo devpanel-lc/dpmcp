@@ -92,4 +92,4 @@ export class PlanService {
 
 function step(order: number, operation: string, description: string, mutates: boolean): PlanStep { return { order, operation, description, mutates }; }
 function appSummary(app: { id: string; projectId: string; workspaceId: string; name?: string; hostname?: string; status?: string }) { return { applicationId: app.id, applicationName: app.name, projectId: app.projectId, workspaceId: app.workspaceId, hostname: app.hostname, status: app.status }; }
-function snapshot(app: Parameters<typeof applicationFingerprint>[0]): Preconditions { return { applicationId: app.id, applicationStatus: app.status, appFingerprint: applicationFingerprint(app) }; }
+function snapshot(app: Parameters<typeof applicationFingerprint>[0]): Preconditions { return { applicationId: app.id, projectId: app.projectId, workspaceId: app.workspaceId, applicationStatus: app.status, appFingerprint: applicationFingerprint(app) }; }

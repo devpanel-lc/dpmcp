@@ -1,3 +1,4 @@
+import type { ApplicationRef } from '../domain/types.js';
 import type { DevPanelClient, CreateApplicationRequest } from '../clients/devpanel.js';
 import type { ChangePlan } from '../domain/types.js';
 import type { PlanStore } from '../stores/plan-store.js';
@@ -25,7 +26,7 @@ export class ExecutionService {
   private async revalidate(plan: ChangePlan): Promise<void> {
     await this.store.setStatus(plan.id, 'VALIDATING');
     if (!plan.preconditions.applicationId) return;
-    const app = await this.dp.getApplication(plan.preconditions.applicationId);
+    const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
     if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
       await this.store.setStatus(plan.id, 'STALE');
       throw new Error('Plan is stale: application changed since planning. Create a new plan.');
@@ -60,18 +61,26 @@ export class ExecutionService {
     switch (plan.action) {
       case 'CREATE_APPLICATION': return this.dp.createApplication(plan.proposedInput as unknown as CreateApplicationRequest);
       case 'BACKUP_APPLICATION': {
-        const app = await this.dp.getApplication(String(plan.proposedInput.applicationId));
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.createBackup(app);
       }
       case 'RESTORE_APPLICATION': {
-        const app = await this.dp.getApplication(String(plan.proposedInput.applicationId));
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.restoreBackup(app, String(plan.proposedInput.backupId));
       }
       case 'DELETE_APPLICATION': {
-        const app = await this.dp.getApplication(String(plan.proposedInput.applicationId));
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.deleteApplication(app);
       }
     }
+  }
+
+  private refFromPreconditions(pre: ChangePlan['preconditions']): ApplicationRef {
+    return {
+      id: pre.applicationId ?? '',
+      projectId: pre.projectId ?? '',
+      workspaceId: pre.workspaceId ?? '',
+    };
   }
 
   private verifyIntegrity(plan: ChangePlan): void {

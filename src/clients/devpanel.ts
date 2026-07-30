@@ -13,9 +13,9 @@ export interface CreateApplicationRequest {
 
 export interface DevPanelClient {
   listApplications(search?: string): Promise<ApplicationRef[]>;
-  getApplication(id: string): Promise<ApplicationRef>;
-  getApplicationActivities(id: string): Promise<unknown>;
-  getApplicationLogs(activityId: string): Promise<unknown>;
+  getApplication(app: ApplicationRef): Promise<ApplicationRef>;
+  getApplicationActivities(app: ApplicationRef): Promise<unknown>;
+  getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown>;
   listBackups(app: ApplicationRef): Promise<BackupRef[]>;
   createApplication(input: CreateApplicationRequest): Promise<ApplicationRef>;
   createBackup(app: ApplicationRef): Promise<BackupRef>;

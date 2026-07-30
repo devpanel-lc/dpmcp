@@ -43,7 +43,7 @@ export class RealDevPanelClient implements DevPanelClient {
       id,
       projectId: firstString(project, '_id', 'id') ?? fallback?.projectId ?? '',
       workspaceId: firstString(workspace, '_id', 'id') ?? fallback?.workspaceId ?? config.defaultWorkspaceId,
-      name: firstString(r, 'name') ?? firstString(project, 'name') ?? fallback?.name,
+      name: firstString(r, 'applicationName', 'name') ?? firstString(project, 'name') ?? fallback?.name,
       hostname: firstString(r, 'hostname', 'applicationURL') ?? fallback?.hostname,
       status: firstString(r, 'status') ?? fallback?.status,
       originBranch: firstString(r, 'originBranch') ?? fallback?.originBranch,
@@ -61,17 +61,18 @@ export class RealDevPanelClient implements DevPanelClient {
     return items.map(item => this.normalizeApplication(item));
   }
 
-  async getApplication(id: string): Promise<ApplicationRef> {
-    const raw = await this.request(`/api/v2/applications/${encodeURIComponent(id)}`);
-    return this.normalizeApplication(raw, { id });
+  async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}`);
+    return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
   }
 
-  async getApplicationActivities(id: string): Promise<unknown> {
-    return this.request(`/api/v2/applications/${encodeURIComponent(id)}/activities`);
+  async getApplicationActivities(app: ApplicationRef): Promise<unknown> {
+    return this.request(`/api/v2/activities?workspaceId=${encodeURIComponent(app.workspaceId)}&projectId=${encodeURIComponent(app.projectId)}&applicationId=${encodeURIComponent(app.id)}&pageIndex=1&pageSize=50`);
   }
 
-  async getApplicationLogs(activityId: string): Promise<unknown> {
-    return this.request(`/api/v2/activities/${encodeURIComponent(activityId)}/logs?pageSize=200`);
+  async getApplicationLogs(app: ApplicationRef, containerName = 'php', pageSize = 100): Promise<unknown> {
+    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/http-logs/${encodeURIComponent(containerName)}?pageSize=${pageSize}`);
   }
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {

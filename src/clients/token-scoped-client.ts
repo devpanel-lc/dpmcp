@@ -28,16 +28,16 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().listApplications(search);
   }
 
-  async getApplication(id: string): Promise<ApplicationRef> {
-    return this.client().getApplication(id);
+  async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    return this.client().getApplication(app);
   }
 
-  async getApplicationActivities(id: string): Promise<unknown> {
-    return this.client().getApplicationActivities(id);
+  async getApplicationActivities(app: ApplicationRef): Promise<unknown> {
+    return this.client().getApplicationActivities(app);
   }
 
-  async getApplicationLogs(activityId: string): Promise<unknown> {
-    return this.client().getApplicationLogs(activityId);
+  async getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown> {
+    return this.client().getApplicationLogs(app, containerName, pageSize);
   }
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {

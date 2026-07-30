@@ -68,6 +68,8 @@ export interface PlanStep {
 
 export interface Preconditions {
   applicationId?: string;
+  projectId?: string;
+  workspaceId?: string;
   applicationStatus?: string;
   backupId?: string;
   appFingerprint?: string;
