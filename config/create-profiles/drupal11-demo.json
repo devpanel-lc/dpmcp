@@ -5,16 +5,24 @@
   "endpoint": "/api/v2/workspaces/{workspaceId}/projects",
   "method": "POST",
   "payload": {
+    "name": "{{projectName}}",
     "repositoryId": "{{repositoryId}}",
     "repositoryOwner": "{{repositoryOwner}}",
     "repositoryName": "{{repositoryName}}",
     "projectType": "{{projectType}}",
     "repositoryType": "{{repositoryType}}",
-    "instances": ["{{branch}}"],
+    "instances": [
+      {
+        "name": "{{branch}}",
+        "originBranch": "{{branch}}",
+        "isFromGit": true,
+        "appRoot": "/var/www/html",
+        "webRoot": "/var/www/html"
+      }
+    ],
     "repositoryProvider": "{{repositoryProvider}}",
     "isUsePersonalToken": false,
     "isUseRepositoryToken": false,
     "repositoryToken": ""
-  },
-  "warning": "The OpenAPI confirms these fields exist, but does NOT document the semantics of instances[] or the create-project response. Verify both from the browser Network tab."
+  }
 }
