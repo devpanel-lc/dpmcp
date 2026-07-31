@@ -1,8 +1,7 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
+import { assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 60;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
@@ -187,12 +186,8 @@ export class RealDevPanelClient implements DevPanelClient {
   }
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
-    if (!config.enableRealCreate) {
-      throw new Error('Real CREATE is disabled. Capture and verify a successful DevPanel UI create request/response, update the create profile, then set DP_ENABLE_REAL_CREATE=true.');
-    }
-    const profilePath = resolve(process.cwd(), `config/create-profiles/${config.createProfile}.json`);
-    const profile = JSON.parse(await readFile(profilePath, 'utf8')) as { verified?: boolean; payload: Record<string, unknown> };
-    if (!profile.verified) throw new Error(`Create profile ${config.createProfile} is not verified`);
+    await assertRealCreateReady();
+    const profile = await loadCreateProfile();
 
     const replacements: Record<string, string> = {
       projectName: input.name,

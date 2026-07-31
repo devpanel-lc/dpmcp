@@ -114,7 +114,7 @@ DP_DEFAULT_WORKSPACE_ID=...
 
 Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI.
 
-**Real CREATE is intentionally disabled by default.** The supplied OpenAPI confirms `POST /api/v2/workspaces/{workspaceId}/projects` and `CreateProjectDTO`, but it does not document the create-project response or the meaning of `instances[]`. Before enabling real creation:
+**Real CREATE is intentionally disabled by default.** The endpoint contract is documented in `docs/api-applications-reference.md` §3.1 (`POST /:workspaceId/projects`) and `CreateProjectDTO` in the OpenAPI, but the OpenAPI's `instances[]` typing conflicts with §3.1, so a captured real payload remains authoritative. Before enabling real creation:
 
 1. Create one application manually in the current DevPanel UI.
 2. Capture the successful Network request + response.

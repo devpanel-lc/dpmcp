@@ -485,6 +485,51 @@ describe('activate flow', () => {
   });
 });
 
+describe('real create gate', () => {
+  const createInput = {
+    workspaceId: 'ws_mock_1', name: 'Test App',
+    repositoryOwner: 'test', repositoryName: 'test-repo',
+    repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+  };
+
+  it('rejects create plan in real mode when real CREATE is disabled', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    config.mode = 'real';
+    config.enableRealCreate = false;
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('Real CREATE is disabled');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+    }
+  });
+
+  it('rejects create plan in real mode when the profile is not verified', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'drupal11-demo';
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('is not verified');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+});
+
 describe('workspace creation flow', () => {
   it('listEnvironments returns seeded environments and filters by search', async () => {
     const dp = new MockDevPanelClient();

@@ -259,7 +259,8 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
         return text(result);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return errorText('EXECUTION_FAILED', message, { plan });
+        const current = await store.get(planId);
+        return errorText('EXECUTION_FAILED', message, { plan: current ?? plan });
       }
     }
 
@@ -273,7 +274,8 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
         return text(result);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return errorText('EXECUTION_FAILED', message, { plan: refreshedPlan });
+        const current = await store.get(planId);
+        return errorText('EXECUTION_FAILED', message, { plan: current ?? refreshedPlan });
       }
     }
 
