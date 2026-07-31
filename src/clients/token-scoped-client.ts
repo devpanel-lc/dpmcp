@@ -96,8 +96,8 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().listRepositories(owner, provider);
   }
 
-  async listRepositoryBranches(owner: string, repoName: string, repoId: string): Promise<GitBranchRef[]> {
-    return this.client().listRepositoryBranches(owner, repoName, repoId);
+  async listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]> {
+    return this.client().listRepositoryBranches(owner, repoName, repoId, provider);
   }
 
   async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {

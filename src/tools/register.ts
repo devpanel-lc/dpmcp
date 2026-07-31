@@ -94,10 +94,10 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   }, async ({ owner, provider }) => text(await dp.listRepositories(owner, provider)));
 
   server.registerTool('devpanel_list_repository_branches', {
-    description: 'Read-only. List branches for a specific Git repository.',
-    inputSchema: { owner: z.string().min(1), repoName: z.string().min(1), repoId: z.string().min(1) },
+    description: 'Read-only. List branches for a specific Git repository. Returns only the first page (max 50 branches, no pagination). repoId is a DevPanel-internal id and is ignored by the provider. Requires a personal token with repo scope for private repositories.',
+    inputSchema: { owner: z.string().min(1), repoName: z.string().min(1), repoId: z.string().min(1), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET', 'DRUPALCODE']).default('GITHUB') },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ owner, repoName, repoId }) => text(await dp.listRepositoryBranches(owner, repoName, repoId)));
+  }, async ({ owner, repoName, repoId, provider }) => text(await dp.listRepositoryBranches(owner, repoName, repoId, provider)));
 
   server.registerTool('devpanel_get_git_token_status', {
     description: 'Read-only. Check whether a personal Git access token is configured for the authenticated user.',

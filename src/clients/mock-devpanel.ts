@@ -141,7 +141,7 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(result);
   }
 
-  async listRepositoryBranches(owner: string, repoName: string, _repoId: string): Promise<GitBranchRef[]> {
+  async listRepositoryBranches(owner: string, repoName: string, _repoId: string, _provider?: string): Promise<GitBranchRef[]> {
     return structuredClone(this.gitBranches);
   }
 

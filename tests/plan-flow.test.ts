@@ -566,7 +566,7 @@ describe('git provider discovery', () => {
 
   it('listRepositoryBranches returns branches', async () => {
     const dp = new MockDevPanelClient();
-    const branches = await dp.listRepositoryBranches('my-org', 'my-repo', 'repo_1');
+    const branches = await dp.listRepositoryBranches('my-org', 'my-repo', 'repo_1', 'GITHUB');
     expect(branches.length).toBeGreaterThan(0);
     expect(branches[0]).toHaveProperty('name');
   });

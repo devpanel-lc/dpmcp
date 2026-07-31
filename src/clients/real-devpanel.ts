@@ -263,11 +263,11 @@ export class RealDevPanelClient implements DevPanelClient {
     };
   }
 
-  async listRepositoryBranches(owner: string, repoName: string, repoId: string): Promise<GitBranchRef[]> {
+  async listRepositoryBranches(owner: string, repoName: string, repoId: string, provider = 'GITHUB'): Promise<GitBranchRef[]> {
     const encodedOwner = encodeURIComponent(owner);
     const encodedName = encodeURIComponent(repoName);
     const encodedId = encodeURIComponent(repoId);
-    const raw = await this.request(`/api/v2/users/repositories/${encodedName}/${encodedId}/branches?owner=${encodedOwner}`);
+    const raw = await this.request(`/api/v2/users/repositories/${encodedName}/${encodedId}/branches?gitProvider=${provider.toUpperCase()}&owner=${encodedOwner}&isUsePersonalToken=1`);
     const items = extractItems(raw, 'branches', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {
       return raw.map(item => this.normalizeBranch(item));
@@ -277,9 +277,10 @@ export class RealDevPanelClient implements DevPanelClient {
 
   private normalizeBranch(raw: unknown): GitBranchRef {
     const r = asRecord(raw);
+    const commit = asRecord(r.commit);
     return {
       name: firstString(r, 'name', 'branchName', 'branch') ?? String(r.name ?? ''),
-      commitSha: firstString(r, 'commitSha', 'commit_sha', 'sha'),
+      commitSha: firstString(r, 'commitSha', 'commit_sha', 'sha') ?? firstString(commit, 'sha', 'id'),
     };
   }
 
