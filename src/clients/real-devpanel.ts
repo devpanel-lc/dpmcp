@@ -25,7 +25,7 @@ function extractItems(raw: unknown, ...keys: string[]): unknown[] {
 }
 
 export class RealDevPanelClient implements DevPanelClient {
-  constructor(private readonly accessToken: string) {}
+  constructor(private readonly accessToken: string) { }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, '')}${path}`, {
@@ -238,10 +238,10 @@ export class RealDevPanelClient implements DevPanelClient {
     });
   }
 
-  async listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]> {
-    const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
+  async listRepositories(owner?: string, provider = 'GITHUB'): Promise<GitRepoRef[]> {
+    const qs = new URLSearchParams({ pageIndex: '1', isUsePersonalToken: '1' });
     if (owner) qs.set('owner', owner);
-    if (provider) qs.set('provider', provider);
+    qs.set('gitProvider', provider.toUpperCase());
     const raw = await this.request(`/api/v2/users/repositories?${qs}`);
     const items = extractItems(raw, 'repositories', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {

@@ -89,7 +89,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   server.registerTool('devpanel_list_repositories', {
     description: 'Read-only. Search accessible Git repositories from connected providers.',
-    inputSchema: { owner: z.string().optional(), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).optional() },
+    inputSchema: { owner: z.string().optional(), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ owner, provider }) => text(await dp.listRepositories(owner, provider)));
 
