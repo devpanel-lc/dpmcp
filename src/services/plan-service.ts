@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import type { ChangePlan, PlanAction, PlanStep, Preconditions, RiskLevel } from '../domain/types.js';
-import type { DevPanelClient, CreateApplicationRequest } from '../clients/devpanel.js';
+import type { DevPanelClient, CreateApplicationRequest, CreateWorkspaceRequest } from '../clients/devpanel.js';
 import type { PlanStore } from '../stores/plan-store.js';
 import { hashPlan } from '../utils/hash.js';
 import { applicationFingerprint } from '../utils/fingerprint.js';
@@ -37,6 +37,30 @@ export class PlanService {
       preconditions: {},
       expectedResult: 'A new DevPanel application exists and can be read through the Applications API.',
       rollback: 'Delete the newly-created application/project if creation partially succeeds and cleanup is safe.'
+    });
+  }
+
+  async createWorkspacePlan(input: CreateWorkspaceRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const envs = await this.dp.listEnvironments();
+    const env = envs.find(e => e.id === input.environmentId);
+    if (!env) {
+      throw new Error(
+        `Environment not found: ${input.environmentId}. List environments with devpanel_list_environments, or create one in the DevPanel UI first (environment provisioning is not yet supported via MCP).`
+      );
+    }
+    return this.createPlan({
+      action: 'CREATE_WORKSPACE', risk: 'LOW', ownerId,
+      summary: `Create workspace ${input.name} on environment ${env.name ?? input.environmentId}`,
+      target: { environmentId: input.environmentId, environmentName: env.name ?? null },
+      proposedInput: input as unknown as Record<string, unknown>,
+      steps: [
+        step(1, 'VERIFY_ENVIRONMENT', 'Verify the target environment still exists', false),
+        step(2, 'CREATE_WORKSPACE', 'Create the DevPanel workspace on the existing environment', true),
+        step(3, 'VERIFY_WORKSPACE', 'List workspaces and confirm the new workspace is visible', false),
+      ],
+      preconditions: { environmentId: input.environmentId },
+      expectedResult: `A new DevPanel workspace "${input.name}" exists on environment ${env.name ?? input.environmentId}.`,
+      rollback: 'No delete-workspace API is confirmed; rollback is not guaranteed. The existing environment is not modified.'
     });
   }
 

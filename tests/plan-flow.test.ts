@@ -339,6 +339,99 @@ describe('token scoped client and owner identity', () => {
   });
 });
 
+describe('workspace creation flow', () => {
+  it('listEnvironments returns seeded environments and filters by search', async () => {
+    const dp = new MockDevPanelClient();
+    const all = await dp.listEnvironments();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all[0]).toHaveProperty('id');
+    expect(all[0]).toHaveProperty('name');
+
+    const filtered = await dp.listEnvironments('staging');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].id).toBe('env_mock_2');
+  });
+
+  it('creates a workspace plan, executes after approval, and the workspace appears', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({
+      name: 'Team Workspace', environmentId: 'env_mock_1', description: 'test', tags: ['dev'],
+    });
+
+    expect(plan.action).toBe('CREATE_WORKSPACE');
+    expect(plan.preconditions.environmentId).toBe('env_mock_1');
+    expect(plan.steps.some(s => s.operation === 'CREATE_WORKSPACE' && s.mutates)).toBe(true);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const workspaces = await dp.listWorkspaces();
+    expect(workspaces.some(w => w.name === 'Team Workspace')).toBe(true);
+
+    const succeededPlan = await store.get(plan.id);
+    expect(succeededPlan?.status).toBe('SUCCEEDED');
+  });
+
+  it('rejects plan creation when environment does not exist', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.createWorkspacePlan({
+      name: 'Bad Workspace', environmentId: 'env_missing',
+    })).rejects.toThrow('Environment not found: env_missing');
+  });
+
+  it('marks plan STALE when the environment is removed after approval', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({ name: 'Ephemeral Workspace', environmentId: 'env_mock_1' });
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    dp.removeEnvironment('env_mock_1');
+
+    const approvedPlan = await store.get(plan.id)!;
+    await expect(executor.executeApprovedPlan(approvedPlan!)).rejects.toThrow('Plan is stale');
+
+    const stalePlan = await store.get(plan.id);
+    expect(stalePlan?.status).toBe('STALE');
+  });
+
+  it('rejects duplicate workspace names at execution time', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({ name: 'Default Workspace', environmentId: 'env_mock_1' });
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    await expect(executor.executeApprovedPlan(approvedPlan!)).rejects.toThrow('Workspace name already exists');
+  });
+});
+
 describe('git provider discovery', () => {
   it('listGitOwners returns connected providers', async () => {
     const dp = new MockDevPanelClient();

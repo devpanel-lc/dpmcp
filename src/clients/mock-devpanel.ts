@@ -1,10 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
-import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
   private apps = new Map<string, ApplicationRef>();
   private backups = new Map<string, BackupRef[]>();
+
+  private workspaces: WorkspaceRef[] = [
+    { id: 'ws_mock_1', name: 'Default Workspace', slug: 'default' },
+  ];
+  private environments: EnvironmentRef[] = [
+    { id: 'env_mock_1', name: 'Default Cluster', clusterName: 'cluster-default', status: 'RUNNING', provider: 'AWS' },
+    { id: 'env_mock_2', name: 'Staging Cluster', clusterName: 'cluster-staging', status: 'RUNNING', provider: 'AWS' },
+  ];
+  private projects: ProjectRef[] = [
+    { id: 'project_demo_1', name: 'Demo Project', workspaceId: 'ws_mock_1' },
+  ];
+  private projectTypes: ProjectTypeRef[] = [
+    { key: 'lamp', label: 'LAMP' },
+    { key: 'nodejs', label: 'Node.js' },
+    { key: 'drupal11_v2', label: 'Drupal 11' },
+    { key: 'wordpress_v2', label: 'WordPress' },
+  ];
 
   private gitOwners: GitOwnerRef[] = [
     { id: 'owner_1', name: 'my-org', provider: 'github', avatarUrl: 'https://avatars.githubusercontent.com/u/1' },
@@ -28,6 +45,43 @@ export class MockDevPanelClient implements DevPanelClient {
       status: 'DEPLOY_APPLICATION_SUCCESS', originBranch: 'main'
     };
     this.apps.set(app.id, app);
+  }
+
+  async listWorkspaces(): Promise<WorkspaceRef[]> {
+    return structuredClone(this.workspaces);
+  }
+
+  async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
+    if (!search) return structuredClone(this.environments);
+    const q = search.toLowerCase();
+    return structuredClone(this.environments.filter(e =>
+      `${e.id} ${e.name ?? ''} ${e.clusterName ?? ''}`.toLowerCase().includes(q)));
+  }
+
+  async createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef> {
+    if (!input.environmentId) throw new Error('environmentId is required');
+    const env = this.environments.find(e => e.id === input.environmentId);
+    if (!env) throw new Error(`Environment not found: ${input.environmentId}`);
+    const name = input.name.trim();
+    if (!name) throw new Error('Workspace name is required');
+    if (this.workspaces.some(w => w.name.toLowerCase() === name.toLowerCase())) {
+      throw new Error(`Workspace name already exists: ${name}`);
+    }
+    const workspace: WorkspaceRef = { id: `ws_${randomUUID().slice(0, 8)}`, name };
+    this.workspaces.push(workspace);
+    return structuredClone(workspace);
+  }
+
+  removeEnvironment(id: string): void {
+    this.environments = this.environments.filter(e => e.id !== id);
+  }
+
+  async listProjects(workspaceId: string): Promise<ProjectRef[]> {
+    return structuredClone(this.projects.filter(p => p.workspaceId === workspaceId));
+  }
+
+  async listProjectTypes(): Promise<ProjectTypeRef[]> {
+    return structuredClone(this.projectTypes);
   }
 
   async listApplications(search?: string): Promise<ApplicationRef[]> {

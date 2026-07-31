@@ -29,6 +29,41 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   const elicitationFn = server.server.elicitInput.bind(server.server);
   const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
 
+  // ---- Discovery tools ----
+
+  server.registerTool('devpanel_list_workspaces', {
+    description: 'Read-only. List all DevPanel workspaces accessible to the authenticated user.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => text(await dp.listWorkspaces()));
+
+  server.registerTool('devpanel_list_environments', {
+    description: 'Read-only. List DevPanel environments (Kubernetes clusters), optionally filtered by search string. Environment IDs are required to plan workspace creation. If none exist, the environment must be created in the DevPanel UI first -- provisioning is not yet supported via MCP.',
+    inputSchema: { search: z.string().optional() },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ search }) => {
+    const environments = await dp.listEnvironments(search);
+    if (environments.length === 0) {
+      return text({
+        status: 'no_environments',
+        message: 'No environments found. Environment (cluster) creation is not yet supported via MCP -- create an environment in the DevPanel UI first, then list environments again to get its ID.',
+      });
+    }
+    return text(environments);
+  });
+
+  server.registerTool('devpanel_list_projects', {
+    description: 'Read-only. List all DevPanel projects in a workspace.',
+    inputSchema: { workspaceId: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ workspaceId }) => text(await dp.listProjects(workspaceId)));
+
+  server.registerTool('devpanel_list_project_types', {
+    description: 'Read-only. List available DevPanel project types (e.g. lamp, drupal11_v2, wordpress_v2).',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => text(await dp.listProjectTypes()));
+
   server.registerTool('devpanel_list_applications', {
     description: 'Read-only. List DevPanel applications, optionally filtered by a search string.',
     inputSchema: { search: z.string().optional() },
@@ -125,6 +160,17 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     inputSchema: { application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ application }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
+
+  server.registerTool('devpanel_plan_create_workspace', {
+    description: 'PLAN ONLY. Create an immutable proposed plan to create a DevPanel workspace on an existing environment (no cluster provisioning). Obtain the environmentId from devpanel_list_environments. Does not change DevPanel until a human approves the plan.',
+    inputSchema: {
+      name: z.string().min(1).describe('Workspace name'),
+      environmentId: z.string().min(1).describe('Existing environment ID (see devpanel_list_environments)'),
+      description: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => text({ plan: await plans.createWorkspacePlan(args, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_get_plan', {
     description: 'Read-only. Get an immutable change plan, its approval status, and any execution result.',

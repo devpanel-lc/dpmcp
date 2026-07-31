@@ -17,9 +17,36 @@ export type PlanAction =
   | 'CREATE_APPLICATION'
   | 'BACKUP_APPLICATION'
   | 'RESTORE_APPLICATION'
-  | 'DELETE_APPLICATION';
+  | 'DELETE_APPLICATION'
+  | 'CREATE_WORKSPACE';
 
 export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
+
+export interface WorkspaceRef {
+  id: string;
+  name: string;
+  slug?: string;
+}
+
+export interface EnvironmentRef {
+  id: string;
+  name?: string;
+  clusterName?: string;
+  status?: string;
+  provider?: string;
+  raw?: unknown;
+}
+
+export interface ProjectRef {
+  id: string;
+  name: string;
+  workspaceId: string;
+}
+
+export interface ProjectTypeRef {
+  key: string;
+  label?: string;
+}
 
 export interface GitOwnerRef {
   id: string;
@@ -95,6 +122,7 @@ export interface Preconditions {
   applicationStatus?: string;
   backupId?: string;
   appFingerprint?: string;
+  environmentId?: string;
 }
 
 export interface ApprovalRecord {

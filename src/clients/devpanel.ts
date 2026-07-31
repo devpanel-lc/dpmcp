@@ -1,4 +1,4 @@
-import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
 
 export interface CreateApplicationRequest {
   workspaceId: string;
@@ -11,13 +11,25 @@ export interface CreateApplicationRequest {
   repositoryType?: string;
 }
 
+export interface CreateWorkspaceRequest {
+  name: string;
+  description?: string;
+  environmentId: string;
+  tags?: string[];
+}
+
 export interface DevPanelClient {
+  listWorkspaces(): Promise<WorkspaceRef[]>;
+  listEnvironments(search?: string): Promise<EnvironmentRef[]>;
+  listProjects(workspaceId: string): Promise<ProjectRef[]>;
+  listProjectTypes(): Promise<ProjectTypeRef[]>;
   listApplications(search?: string): Promise<ApplicationRef[]>;
   getApplication(app: ApplicationRef): Promise<ApplicationRef>;
   getApplicationActivities(app: ApplicationRef): Promise<unknown>;
   getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown>;
   listBackups(app: ApplicationRef): Promise<BackupRef[]>;
   createApplication(input: CreateApplicationRequest): Promise<ApplicationRef>;
+  createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef>;
   createBackup(app: ApplicationRef): Promise<BackupRef>;
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;

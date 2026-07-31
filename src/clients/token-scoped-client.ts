@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
-import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
 import { config } from '../config.js';
@@ -22,6 +22,22 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     const token = tokenStorage.getStore();
     if (!token) return this.mockClient;
     return new RealDevPanelClient(token);
+  }
+
+  async listWorkspaces(): Promise<WorkspaceRef[]> {
+    return this.client().listWorkspaces();
+  }
+
+  async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
+    return this.client().listEnvironments(search);
+  }
+
+  async listProjects(workspaceId: string): Promise<ProjectRef[]> {
+    return this.client().listProjects(workspaceId);
+  }
+
+  async listProjectTypes(): Promise<ProjectTypeRef[]> {
+    return this.client().listProjectTypes();
   }
 
   async listApplications(search?: string): Promise<ApplicationRef[]> {
@@ -46,6 +62,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
     return this.client().createApplication(input);
+  }
+
+  async createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef> {
+    return this.client().createWorkspace(input);
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {

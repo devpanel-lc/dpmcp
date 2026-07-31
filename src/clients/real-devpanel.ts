@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
-import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -59,6 +59,83 @@ export class RealDevPanelClient implements DevPanelClient {
       originBranch: firstString(r, 'originBranch') ?? fallback?.originBranch,
       raw,
     };
+  }
+
+  private normalizeWorkspace(raw: unknown): WorkspaceRef {
+    const r = asRecord(raw);
+    const id = firstString(r, '_id', 'id') ?? '';
+    return { id, name: firstString(r, 'name', 'workspaceName') ?? id, slug: firstString(r, 'slug') };
+  }
+
+  private normalizeEnvironment(raw: unknown): EnvironmentRef {
+    const r = asRecord(raw);
+    const id = firstString(r, '_id', 'id', 'environmentId') ?? '';
+    return {
+      id,
+      name: firstString(r, 'name', 'environmentName'),
+      clusterName: firstString(r, 'clusterName'),
+      status: firstString(r, 'status'),
+      provider: firstString(r, 'provider', 'cloudProvider'),
+      raw,
+    };
+  }
+
+  async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
+    const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
+    if (search) qs.set('search', search);
+    const raw = await this.request(`/api/v2/environments?${qs}`);
+    const items = extractItems(raw, 'environments', 'data', 'items');
+    if (items.length === 0 && Array.isArray(raw)) return raw.map(item => this.normalizeEnvironment(item));
+    return items.map(item => this.normalizeEnvironment(item));
+  }
+
+  async createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef> {
+    const payload: Record<string, unknown> = { name: input.name, environmentId: input.environmentId };
+    if (input.description) payload.description = input.description;
+    if (input.tags && input.tags.length > 0) payload.tags = input.tags;
+    const raw = await this.request('/api/v2/workspaces', { method: 'POST', body: JSON.stringify(payload) });
+    const normalized = this.normalizeWorkspace(raw);
+    if (!normalized.id) {
+      const r = asRecord(raw);
+      const env = asRecord(r.environment);
+      const id = firstString(r, '_id', 'id') ?? firstString(env, '_id', 'id');
+      if (!id) throw new Error('Could not determine workspace id from DevPanel response');
+      return { id, name: input.name, slug: normalized.slug };
+    }
+    return normalized;
+  }
+
+  private normalizeProject(raw: unknown): ProjectRef {
+    const r = asRecord(raw);
+    const id = firstString(r, '_id', 'id', 'projectId') ?? '';
+    const workspace = asRecord(r.workspace);
+    return {
+      id,
+      name: firstString(r, 'name') ?? id,
+      workspaceId: firstString(workspace, '_id', 'id') ?? '',
+    };
+  }
+
+  async listWorkspaces(): Promise<WorkspaceRef[]> {
+    const raw = await this.request('/api/v2/workspaces?pageIndex=1&pageSize=100');
+    const items = extractItems(raw, 'workspaces', 'data', 'items');
+    return items.map(item => this.normalizeWorkspace(item));
+  }
+
+  async listProjects(workspaceId: string): Promise<ProjectRef[]> {
+    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects?pageIndex=1&pageSize=100`);
+    const items = extractItems(raw, 'projects', 'data', 'items');
+    return items.map(item => this.normalizeProject(item));
+  }
+
+  async listProjectTypes(): Promise<ProjectTypeRef[]> {
+    const raw = await this.request('/api/v2/projects/project-types');
+    const items = extractItems(raw, 'projectTypes', 'data', 'items');
+    if (items.length === 0 && Array.isArray(raw)) return raw.map(k => ({ key: String(k), label: String(k) }));
+    return items.map(item => {
+      const r = asRecord(item);
+      return { key: firstString(r, 'key', '_id', 'id') ?? String(item), label: firstString(r, 'label', 'name', 'title') };
+    });
   }
 
   async listApplications(search?: string): Promise<ApplicationRef[]> {
