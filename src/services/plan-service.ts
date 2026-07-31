@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
-import type { ChangePlan, PlanAction, PlanStep, Preconditions, RiskLevel } from '../domain/types.js';
+import type { ChangePlan, PlanAction, PlanStep, Preconditions, RiskLevel, ActivateConfig } from '../domain/types.js';
 import type { DevPanelClient, CreateApplicationRequest, CreateWorkspaceRequest } from '../clients/devpanel.js';
 import type { PlanStore } from '../stores/plan-store.js';
 import { hashPlan } from '../utils/hash.js';
@@ -16,12 +16,12 @@ export class PlanService {
   }
 
   async createApplicationPlan(input: CreateApplicationRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const existing = await this.dp.listApplications(input.repositoryName);
+    const existing = await this.dp.listApplications(input.workspaceId, input.repositoryName);
     const same = existing.find(a => (a.name ?? '').toLowerCase() === input.repositoryName.toLowerCase());
     if (same) throw new Error(`Application/project name conflict candidate already exists: ${same.name} (${same.id})`);
     return this.createPlan({
       action: 'CREATE_APPLICATION', risk: 'LOW', ownerId,
-      summary: `Create application from ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
+      summary: `Create application ${input.name} from ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
       target: {
         workspaceId: input.workspaceId,
         repository: `${input.repositoryOwner}/${input.repositoryName}`,
@@ -33,9 +33,10 @@ export class PlanService {
         step(1, 'CREATE_PROJECT', 'Create a DevPanel project using the verified create profile', true),
         step(2, 'WAIT_APPLICATION', 'Wait for the project application to appear', false),
         step(3, 'VERIFY_READY', 'Read the created application and report its status/URL', false),
+        step(4, 'NOTE_ACTIVATE', 'After this plan succeeds, create and execute an ACTIVATE_APPLICATION plan to deploy the app to K8s', false),
       ],
       preconditions: {},
-      expectedResult: 'A new DevPanel application exists and can be read through the Applications API.',
+      expectedResult: 'A new DevPanel application exists with status UNDEPLOY_APPLICATION_SUCCESS. It must be activated before it serves traffic.',
       rollback: 'Delete the newly-created application/project if creation partially succeeds and cleanup is safe.'
     });
   }
@@ -61,6 +62,27 @@ export class PlanService {
       preconditions: { environmentId: input.environmentId },
       expectedResult: `A new DevPanel workspace "${input.name}" exists on environment ${env.name ?? input.environmentId}.`,
       rollback: 'No delete-workspace API is confirmed; rollback is not guaranteed. The existing environment is not modified.'
+    });
+  }
+
+  async activatePlan(application: string, activateConfig: ActivateConfig, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application);
+    if (app.status !== 'UNDEPLOY_APPLICATION_SUCCESS') {
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Expected "UNDEPLOY_APPLICATION_SUCCESS" before activation.`);
+    }
+    return this.createPlan({
+      action: 'ACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
+      summary: `Activate (deploy) application ${app.name ?? app.id} to K8s`,
+      target: appSummary(app),
+      proposedInput: { ...appSummary(app), activateConfig },
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in UNDEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, 'ACTIVATE_APPLICATION', 'Deploy the application to Kubernetes via PATCH /activate', true),
+        step(3, 'VERIFY_ACTIVATED', 'Poll application status until it reaches DEPLOY_APPLICATION_SUCCESS or fails', false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
+      rollback: 'Call devpanel_deactivate_application to undeploy from K8s (separate plan).'
     });
   }
 

@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
   private apps = new Map<string, ApplicationRef>();
   private backups = new Map<string, BackupRef[]>();
-
   private workspaces: WorkspaceRef[] = [
     { id: 'ws_mock_1', name: 'Default Workspace', slug: 'default' },
   ];
@@ -40,9 +39,9 @@ export class MockDevPanelClient implements DevPanelClient {
 
   constructor() {
     const app: ApplicationRef = {
-      id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace',
+      id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1',
       name: 'Existing Demo', hostname: 'existing-demo.example.local',
-      status: 'DEPLOY_APPLICATION_SUCCESS', originBranch: 'main'
+      status: 'UNDEPLOY_APPLICATION_SUCCESS', originBranch: 'main'
     };
     this.apps.set(app.id, app);
   }
@@ -84,11 +83,16 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(this.projectTypes);
   }
 
-  async listApplications(search?: string): Promise<ApplicationRef[]> {
-    const all = [...this.apps.values()];
+  async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
+    const all = [...this.apps.values()].filter(a => a.workspaceId === workspaceId);
     if (!search) return structuredClone(all);
     const q = search.toLowerCase();
     return structuredClone(all.filter(a => `${a.name ?? ''} ${a.hostname ?? ''} ${a.id}`.toLowerCase().includes(q)));
+  }
+
+  async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
+    const all = [...this.apps.values()].filter(a => a.workspaceId === workspaceId && a.projectId === projectId);
+    return structuredClone(all);
   }
 
   async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
@@ -116,9 +120,9 @@ export class MockDevPanelClient implements DevPanelClient {
       id: `app_${randomUUID().slice(0, 8)}`,
       projectId,
       workspaceId: input.workspaceId,
-      name: input.repositoryName,
+      name: input.name,
       hostname: `${input.repositoryName.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.example.local`,
-      status: 'DEPLOY_APPLICATION_SUCCESS',
+      status: 'UNDEPLOY_APPLICATION_SUCCESS',
       originBranch: input.branch,
     };
     this.apps.set(app.id, app);
@@ -152,6 +156,14 @@ export class MockDevPanelClient implements DevPanelClient {
 
   async removeGitToken(_provider: string): Promise<void> {
     this.personalTokenSet = false;
+  }
+
+  async activateApplication(app: ApplicationRef, _config: ActivateConfig): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.status = 'DEPLOY_APPLICATION_SUCCESS';
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {

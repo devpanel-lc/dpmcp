@@ -311,7 +311,7 @@ describe('token scoped client and owner identity', () => {
 
   it('TokenScopedDevPanelClient falls back to mock outside token context', async () => {
     const client = new TokenScopedDevPanelClient();
-    const apps = await client.listApplications();
+    const apps = await client.listApplications('ws_mock_1');
     expect(Array.isArray(apps)).toBe(true);
   });
 
@@ -336,6 +336,106 @@ describe('token scoped client and owner identity', () => {
 
     const plan = await plans.backupPlan('app_demo_1');
     expect(plan.ownerId).toBe('local');
+  });
+});
+
+describe('discovery methods', () => {
+  it('listWorkspaces returns mock workspaces', async () => {
+    const dp = new MockDevPanelClient();
+    const workspaces = await dp.listWorkspaces();
+    expect(workspaces.length).toBeGreaterThan(0);
+    expect(workspaces[0]).toHaveProperty('id');
+    expect(workspaces[0]).toHaveProperty('name');
+  });
+
+  it('listProjects returns workspace-scoped projects', async () => {
+    const dp = new MockDevPanelClient();
+    const projects = await dp.listProjects('ws_mock_1');
+    expect(projects.length).toBeGreaterThan(0);
+    expect(projects[0].workspaceId).toBe('ws_mock_1');
+  });
+
+  it('listProjectTypes returns type definitions', async () => {
+    const dp = new MockDevPanelClient();
+    const types = await dp.listProjectTypes();
+    expect(types.length).toBeGreaterThan(0);
+    expect(types[0]).toHaveProperty('key');
+  });
+
+  it('listApplications is workspace-scoped', async () => {
+    const dp = new MockDevPanelClient();
+    const apps = await dp.listApplications('ws_mock_1');
+    expect(apps.length).toBeGreaterThan(0);
+    const emptyWs = await dp.listApplications('nonexistent');
+    expect(emptyWs).toHaveLength(0);
+  });
+
+  it('listProjectApplications returns scoped apps', async () => {
+    const dp = new MockDevPanelClient();
+    const apps = await dp.listProjectApplications('ws_mock_1', 'project_demo_1');
+    expect(apps.length).toBeGreaterThan(0);
+    expect(apps[0].projectId).toBe('project_demo_1');
+  });
+});
+
+describe('activate flow', () => {
+  it('creates an activate plan and executes it', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro', isFromGit: true,
+      appRoot: '/var/www/html', webRoot: '/var/www/html',
+    });
+
+    expect(plan.action).toBe('ACTIVATE_APPLICATION');
+    expect(plan.steps.length).toBeGreaterThan(0);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.status).toBe('DEPLOY_APPLICATION_SUCCESS');
+  });
+
+  it('rejects activate when app is not in UNDEPLOY_APPLICATION_SUCCESS status', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    await expect(plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    })).rejects.toThrow('Expected "UNDEPLOY_APPLICATION_SUCCESS"');
+  });
+
+  it('create plan includes name and notes activate step', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.createApplicationPlan({
+      workspaceId: 'ws_mock_1', name: 'Test App',
+      repositoryOwner: 'test', repositoryName: 'test-repo',
+      repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+    });
+
+    expect(plan.action).toBe('CREATE_APPLICATION');
+    expect(plan.summary).toContain('Test App');
+    const noteStep = plan.steps.find(s => s.operation === 'NOTE_ACTIVATE');
+    expect(noteStep).toBeDefined();
   });
 });
 

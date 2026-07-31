@@ -19,13 +19,16 @@ function errorText(errorCode: ErrorCode, message: string, details?: Record<strin
   };
 }
 
+const wsOpt = {
+  workspaceId: z.string().default(config.defaultWorkspaceId)
+    .transform(v => v || config.defaultWorkspaceId),
+};
+
 export function registerTools(server: McpServer, dp: DevPanelClient, store: PlanStore): void {
   const plans = new PlanService(dp, store);
   const executor = new ExecutionService(dp, store);
   const resolver = new ApplicationResolver(dp);
 
-  // The MCP SDK's elicitInput dispatches based on the mode parameter in the call.
-  // One function serves both form and URL elicitation.
   const elicitationFn = server.server.elicitInput.bind(server.server);
   const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
 
@@ -65,34 +68,16 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   }, async () => text(await dp.listProjectTypes()));
 
   server.registerTool('devpanel_list_applications', {
-    description: 'Read-only. List DevPanel applications, optionally filtered by a search string.',
-    inputSchema: { search: z.string().optional() },
+    description: 'Read-only. List DevPanel applications in a workspace, optionally filtered by search string.',
+    inputSchema: { ...wsOpt, search: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ search }) => text(await dp.listApplications(search)));
+  }, async ({ workspaceId, search }) => text(await dp.listApplications(workspaceId, search)));
 
-  server.registerTool('devpanel_get_application', {
-    description: 'Read-only. Resolve an application by ID or unique search string and return normalized details.',
-    inputSchema: { application: z.string().min(1) },
+  server.registerTool('devpanel_list_project_applications', {
+    description: 'Read-only. List applications in a specific project within a workspace.',
+    inputSchema: { workspaceId: z.string().min(1), projectId: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application }) => text(await resolver.resolve(application)));
-
-  server.registerTool('devpanel_get_application_activities', {
-    description: 'Read-only. Get activity history for an application.',
-    inputSchema: { application: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application }) => { const app = await resolver.resolve(application); return text(await dp.getApplicationActivities(app)); });
-
-  server.registerTool('devpanel_get_activity_logs', {
-    description: 'Read-only. Get HTTP access logs for an application container.',
-    inputSchema: { application: z.string().min(1), containerName: z.string().default('php'), pageSize: z.number().default(100) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application, containerName, pageSize }) => { const app = await resolver.resolve(application); return text(await dp.getApplicationLogs(app, containerName, pageSize)); });
-
-  server.registerTool('devpanel_list_backups', {
-    description: 'Read-only. List backups for an application.',
-    inputSchema: { application: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application }) => { const app = await resolver.resolve(application); return text(await dp.listBackups(app)); });
+  }, async ({ workspaceId, projectId }) => text(await dp.listProjectApplications(workspaceId, projectId)));
 
   // ---- Git provider tools ----
 
@@ -132,34 +117,98 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async ({ provider }) => { await dp.removeGitToken(provider); return text({ status: 'ok' }); });
 
+  // ---- Application detail tools ----
+
+  server.registerTool('devpanel_get_application', {
+    description: 'Read-only. Resolve an application by ID or unique search string and return normalized details.',
+    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ application, workspaceId }) => text(await resolver.resolve(application, workspaceId)));
+
+  server.registerTool('devpanel_get_application_activities', {
+    description: 'Read-only. Get activity history for an application.',
+    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationActivities(app)); });
+
+  server.registerTool('devpanel_get_activity_logs', {
+    description: 'Read-only. Get HTTP access logs for an application container.',
+    inputSchema: { ...wsOpt, application: z.string().min(1), containerName: z.string().default('php'), pageSize: z.number().default(100) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ application, workspaceId, containerName, pageSize }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationLogs(app, containerName, pageSize)); });
+
+  server.registerTool('devpanel_list_backups', {
+    description: 'Read-only. List backups for an application.',
+    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.listBackups(app)); });
+
+  // ---- Plan creation tools ----
+
   server.registerTool('devpanel_plan_create_application', {
-    description: 'PLAN ONLY. Validate inputs and create an immutable proposed plan to create a DevPanel application. Does not change DevPanel.',
+    description: 'PLAN ONLY. Validate inputs and create an immutable proposed plan to create a DevPanel application. Does not change DevPanel. After this plan succeeds, create an activate plan to deploy to K8s.',
     inputSchema: {
-      workspaceId: z.string().default(config.defaultWorkspaceId),
+      ...wsOpt,
+      name: z.string().min(1).describe('Project/application display name'),
       repositoryOwner: z.string().min(1), repositoryName: z.string().min(1),
-      repositoryProvider: z.string().default('github'), repositoryId: z.string().optional(),
+      repositoryProvider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB'), repositoryId: z.string().optional(),
       branch: z.string().default('main'), projectType: z.string().min(1), repositoryType: z.string().optional(),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (args) => text({ plan: await plans.createApplicationPlan(args, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
+  server.registerTool('devpanel_plan_activate_application', {
+    description: 'PLAN ONLY. Create an immutable proposed plan to activate (deploy to K8s) an existing DevPanel application. The application must be in UNDEPLOY_APPLICATION_SUCCESS status.',
+    inputSchema: {
+      ...wsOpt,
+      application: z.string().min(1).describe('Application ID, name, or search query'),
+      groupType: z.enum(['spot', 'on-demand']).default('on-demand'),
+      capacity: z.string().default('micro'),
+      capacityLimit: z.string().optional(),
+      isFromGit: z.boolean().default(true),
+      appRoot: z.string().default('/var/www/html'),
+      webRoot: z.string().default('/var/www/html'),
+      containerImage: z.string().optional(),
+      isEnableEditor: z.boolean().default(false),
+      isEnablePMA: z.boolean().default(false),
+      isEnableBasicAuth: z.boolean().default(false),
+      storage: z.number().optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => {
+    const activateConfig = {
+      groupType: args.groupType,
+      capacity: args.capacity,
+      capacityLimit: args.capacityLimit,
+      isFromGit: args.isFromGit,
+      appRoot: args.appRoot,
+      webRoot: args.webRoot,
+      containerImage: args.containerImage,
+      isEnableEditor: args.isEnableEditor,
+      isEnablePMA: args.isEnablePMA,
+      isEnableBasicAuth: args.isEnableBasicAuth,
+      storage: args.storage,
+    };
+    return text({ plan: await plans.activatePlan(args.application, activateConfig, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' });
+  });
+
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
-    inputSchema: { application: z.string().min(1) },
+    inputSchema: { ...wsOpt, application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_restore_application', {
     description: 'PLAN ONLY. Create a proposed restore plan for a specific or latest backup. Does not change DevPanel.',
-    inputSchema: { application: z.string().min(1), backupId: z.string().optional() },
+    inputSchema: { ...wsOpt, application: z.string().min(1), backupId: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, backupId }) => text({ plan: await plans.restorePlan(application, backupId, currentOwnerId()) }));
+  }, async ({ application, workspaceId, backupId }) => text({ plan: await plans.restorePlan(application, backupId, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_delete_application', {
     description: 'PLAN ONLY. Create a proposed deletion plan after reading current application and backup state. Does not change DevPanel.',
-    inputSchema: { application: z.string().min(1) },
+    inputSchema: { ...wsOpt, application: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_create_workspace', {
     description: 'PLAN ONLY. Create an immutable proposed plan to create a DevPanel workspace on an existing environment (no cluster provisioning). Obtain the environmentId from devpanel_list_environments. Does not change DevPanel until a human approves the plan.',
@@ -172,11 +221,15 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (args) => text({ plan: await plans.createWorkspacePlan(args, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
+  // ---- Plan inspection ----
+
   server.registerTool('devpanel_get_plan', {
     description: 'Read-only. Get an immutable change plan, its approval status, and any execution result.',
     inputSchema: { planId: z.string().min(1) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ planId }) => { const plan = await store.get(planId); if (!plan) return errorText('PLAN_NOT_FOUND', `Plan not found: ${planId}`); return text(plan); });
+
+  // ---- Approval + Execution ----
 
   server.registerTool('devpanel_approve_and_execute_plan', {
     description: 'Requests human approval for an immutable plan and executes it if approved. The model cannot approve plans directly -- this tool triggers an MCP client-native approval dialog (Form Elicitation) or falls back to an external review URL. Only accepts planId.',

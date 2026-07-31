@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
@@ -40,8 +40,12 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().listProjectTypes();
   }
 
-  async listApplications(search?: string): Promise<ApplicationRef[]> {
-    return this.client().listApplications(search);
+  async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
+    return this.client().listApplications(workspaceId, search);
+  }
+
+  async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
+    return this.client().listProjectApplications(workspaceId, projectId);
   }
 
   async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
@@ -66,6 +70,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef> {
     return this.client().createWorkspace(input);
+  }
+
+  async activateApplication(app: ApplicationRef, activateConfig: ActivateConfig): Promise<ApplicationRef> {
+    return this.client().activateApplication(app, activateConfig);
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, EnvironmentRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
 
@@ -138,13 +138,18 @@ export class RealDevPanelClient implements DevPanelClient {
     });
   }
 
-  async listApplications(search?: string): Promise<ApplicationRef[]> {
+  async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
     if (search) qs.set('search', search);
-    const raw = await this.request(`/api/v2/applications?${qs}`);
-    const r = asRecord(raw);
-    const items = Array.isArray(raw) ? raw :
-      (Array.isArray(r.applications) ? r.applications : Array.isArray(r.data) ? r.data : Array.isArray(r.items) ? r.items : []);
+    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/applications?${qs}`);
+    const items = extractItems(raw, 'applications', 'data', 'items');
+    return items.map(item => this.normalizeApplication(item));
+  }
+
+  async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
+    const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
+    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects/${projectId}/applications?${qs}`);
+    const items = extractItems(raw, 'applications', 'data', 'items');
     return items.map(item => this.normalizeApplication(item));
   }
 
@@ -165,9 +170,7 @@ export class RealDevPanelClient implements DevPanelClient {
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
     this.requireHierarchy(app);
     const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups?pageIndex=1&pageSize=100`);
-    const r = asRecord(raw);
-    const items = Array.isArray(raw) ? raw :
-      (Array.isArray(r.backups) ? r.backups : Array.isArray(r.data) ? r.data : Array.isArray(r.items) ? r.items : []);
+    const items = extractItems(raw, 'backups', 'data', 'items');
     return items.map(item => {
       const x = asRecord(item);
       return {
@@ -189,6 +192,7 @@ export class RealDevPanelClient implements DevPanelClient {
     if (!profile.verified) throw new Error(`Create profile ${config.createProfile} is not verified`);
 
     const replacements: Record<string, string> = {
+      projectName: input.name,
       repositoryId: input.repositoryId ?? '', repositoryOwner: input.repositoryOwner,
       repositoryName: input.repositoryName, projectType: input.projectType,
       repositoryType: input.repositoryType ?? '', branch: input.branch,
@@ -197,19 +201,26 @@ export class RealDevPanelClient implements DevPanelClient {
     const payload = JSON.parse(JSON.stringify(profile.payload).replace(/\{\{(\w+)\}\}/g, (_, key: string) => replacements[key] ?? ''));
     const raw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects`, { method: 'POST', body: JSON.stringify(payload) });
 
-    // OpenAPI does not document this response. Support common shapes but fail closed if no project ID is present.
     const r = asRecord(raw);
     const projectId = firstString(r, '_id', 'id', 'projectId') ?? firstString(asRecord(r.project), '_id', 'id');
     if (!projectId) throw new Error('Create Project succeeded but projectId could not be extracted. Update RealDevPanelClient using the captured UI response contract.');
 
     for (let i = 0; i < 60; i++) {
       const listRaw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects/${projectId}/applications?pageIndex=1&pageSize=20`);
-      const lr = asRecord(listRaw);
-      const items = Array.isArray(listRaw) ? listRaw : (Array.isArray(lr.applications) ? lr.applications : Array.isArray(lr.data) ? lr.data : []);
+      const items = extractItems(listRaw, 'applications', 'data', 'items');
       if (items.length > 0) return this.normalizeApplication(items[0], { projectId, workspaceId: input.workspaceId, originBranch: input.branch });
       await new Promise(r => setTimeout(r, 2000));
     }
     throw new Error('Timed out waiting for DevPanel application after project creation');
+  }
+
+  async activateApplication(app: ApplicationRef, actConfig: ActivateConfig): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const raw = await this.request(
+      `/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/activate`,
+      { method: 'PATCH', body: JSON.stringify(actConfig) },
+    );
+    return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
   }
 
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {

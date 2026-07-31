@@ -15,6 +15,7 @@ export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type PlanAction =
   | 'CREATE_APPLICATION'
+  | 'ACTIVATE_APPLICATION'
   | 'BACKUP_APPLICATION'
   | 'RESTORE_APPLICATION'
   | 'DELETE_APPLICATION'
@@ -68,6 +69,20 @@ export interface GitRepoRef {
 export interface GitBranchRef {
   name: string;
   commitSha?: string;
+}
+
+export interface ActivateConfig {
+  groupType: 'spot' | 'on-demand';
+  capacity: string;
+  capacityLimit?: string;
+  isFromGit?: boolean;
+  appRoot?: string;
+  webRoot?: string;
+  containerImage?: string;
+  isEnableEditor?: boolean;
+  isEnablePMA?: boolean;
+  isEnableBasicAuth?: boolean;
+  storage?: number;
 }
 
 export type ErrorCode =
