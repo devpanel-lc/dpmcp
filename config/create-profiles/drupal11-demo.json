@@ -1,28 +1,25 @@
 {
   "id": "drupal11-demo",
-  "verified": false,
-  "notes": "Replace this file with a payload captured from a successful DevPanel UI Create Application request before enabling real create.",
+  "verified": true,
+  "notes": "Verified 2026-07-31 against a real DevPanel UI create of devpanel-lc/drupal-11 (SampleApp). Request and response captured from the DevPanel UI; response returned top-level _id as the project id.",
   "endpoint": "/api/v2/workspaces/{workspaceId}/projects",
   "method": "POST",
   "payload": {
     "name": "{{projectName}}",
-    "repositoryId": "{{repositoryId}}",
+    "projectType": "{{projectType}}",
+    "repositoryProvider": "{{repositoryProvider}}",
+    "repositoryType": "{{repositoryType}}",
     "repositoryOwner": "{{repositoryOwner}}",
     "repositoryName": "{{repositoryName}}",
-    "projectType": "{{projectType}}",
-    "repositoryType": "{{repositoryType}}",
+    "repositoryId": "{{repositoryId}}",
+    "isUsePersonalToken": true,
+    "isPrivateRepository": false,
     "instances": [
       {
+        "branchType": "{{branchType}}",
         "name": "{{branch}}",
-        "originBranch": "{{branch}}",
-        "isFromGit": true,
-        "appRoot": "/var/www/html",
-        "webRoot": "/var/www/html"
+        "originBranch": "{{branch}}"
       }
-    ],
-    "repositoryProvider": "{{repositoryProvider}}",
-    "isUsePersonalToken": false,
-    "isUseRepositoryToken": false,
-    "repositoryToken": ""
+    ]
   }
 }

@@ -26,3 +26,10 @@ export async function assertRealCreateReady(): Promise<void> {
     throw new Error(`Create profile ${config.createProfile} is not verified. Capture a successful DevPanel UI create request/response into config/create-profiles/${config.createProfile}.json and set "verified": true before enabling real CREATE.`);
   }
 }
+
+export function assertRealCreateInput(input: { repositoryId?: string | number }): void {
+  if (config.mode !== 'real') return;
+  if (!input.repositoryId) {
+    throw new Error('repositoryId is required for a real CREATE plan. Get it from devpanel_list_repositories (GitRepoRef.id) and pass it to devpanel_plan_create_application.');
+  }
+}

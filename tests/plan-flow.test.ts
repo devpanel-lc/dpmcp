@@ -519,10 +519,77 @@ describe('real create gate', () => {
     const origProfile = config.createProfile;
     config.mode = 'real';
     config.enableRealCreate = true;
-    config.createProfile = 'drupal11-demo';
+    config.createProfile = 'unverified-test';
     try {
       await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('is not verified');
     } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+
+  it('rejects create plan in real mode when repositoryId is missing', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'drupal11-demo';
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('repositoryId is required');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+
+  it('real client createApplication sends the verified profile payload', async () => {
+    let capturedBody: string | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && String(url).endsWith('/projects')) {
+        capturedBody = init?.body;
+        return { ok: true, text: async () => JSON.stringify({ _id: 'project_123', name: 'Test App', workspace: 'ws_1' }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ items: [{ _id: 'app_1', status: 'UNDEPLOY_APPLICATION_SUCCESS', name: 'Test App', project: { _id: 'project_123', workspace: { _id: 'ws_1' } } }] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'drupal11-demo';
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const app = await client.createApplication({
+        workspaceId: 'ws_1', name: 'Test App',
+        repositoryOwner: 'devpanel-lc', repositoryName: 'drupal-11',
+        repositoryProvider: 'GITHUB', repositoryType: 'EXISTING', repositoryId: '1318040997',
+        branch: 'main', projectType: 'drupal11_v2',
+      });
+
+      expect(app.id).toBe('app_1');
+      const body = JSON.parse(capturedBody ?? '{}');
+      expect(body.name).toBe('Test App');
+      expect(body.projectType).toBe('drupal11_v2');
+      expect(body.repositoryId).toBe(1318040997);
+      expect(body.repositoryType).toBe('EXISTING');
+      expect(body.isPrivateRepository).toBe(false);
+      expect(body.isUsePersonalToken).toBe(true);
+      expect(body.instances[0].branchType).toBe('MAIN');
+      expect(body.instances[0].name).toBe('main');
+      expect(body.instances[0].originBranch).toBe('main');
+      expect(JSON.stringify(body)).not.toContain('{{');
+    } finally {
+      vi.unstubAllGlobals();
       config.mode = origMode;
       config.enableRealCreate = origEnable;
       config.createProfile = origProfile;

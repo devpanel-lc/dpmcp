@@ -1,7 +1,7 @@
 import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
-import { assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
+import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 60;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
@@ -187,16 +187,20 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
     await assertRealCreateReady();
+    assertRealCreateInput(input);
     const profile = await loadCreateProfile();
 
     const replacements: Record<string, string> = {
       projectName: input.name,
       repositoryId: input.repositoryId ?? '', repositoryOwner: input.repositoryOwner,
       repositoryName: input.repositoryName, projectType: input.projectType,
-      repositoryType: input.repositoryType ?? '', branch: input.branch,
-      repositoryProvider: input.repositoryProvider,
+      repositoryType: input.repositoryType ?? 'EXISTING', branch: input.branch,
+      repositoryProvider: input.repositoryProvider, branchType: input.branch.toUpperCase(),
     };
     const payload = JSON.parse(JSON.stringify(profile.payload).replace(/\{\{(\w+)\}\}/g, (_, key: string) => replacements[key] ?? ''));
+    if (typeof payload.repositoryId === 'string' && /^\d+$/.test(payload.repositoryId)) {
+      payload.repositoryId = Number(payload.repositoryId);
+    }
     const raw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects`, { method: 'POST', body: JSON.stringify(payload) });
 
     const r = asRecord(raw);

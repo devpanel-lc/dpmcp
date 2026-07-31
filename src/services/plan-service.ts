@@ -6,7 +6,7 @@ import type { PlanStore } from '../stores/plan-store.js';
 import { hashPlan } from '../utils/hash.js';
 import { applicationFingerprint } from '../utils/fingerprint.js';
 import { ApplicationResolver } from './application-resolver.js';
-import { assertRealCreateReady } from '../clients/real-create-gate.js';
+import { assertRealCreateInput, assertRealCreateReady } from '../clients/real-create-gate.js';
 
 const OWNER_ID_LOCAL = 'local';
 
@@ -18,6 +18,7 @@ export class PlanService {
 
   async createApplicationPlan(input: CreateApplicationRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
     await assertRealCreateReady();
+    assertRealCreateInput(input);
     const existing = await this.dp.listApplications(input.workspaceId, input.repositoryName);
     const same = existing.find(a => (a.name ?? '').toLowerCase() === input.repositoryName.toLowerCase());
     if (same) throw new Error(`Application/project name conflict candidate already exists: ${same.name} (${same.id})`);
