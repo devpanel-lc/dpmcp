@@ -33,10 +33,10 @@ export class PlanService {
         step(1, 'CREATE_PROJECT', 'Create a DevPanel project using the verified create profile', true),
         step(2, 'WAIT_APPLICATION', 'Wait for the project application to appear', false),
         step(3, 'VERIFY_READY', 'Read the created application and report its status/URL', false),
-        step(4, 'NOTE_ACTIVATE', 'After this plan succeeds, create and execute an ACTIVATE_APPLICATION plan to deploy the app to K8s', false),
+        step(4, 'NOTE_ACTIVATE', 'After this plan succeeds, read the created application status: if UNDEPLOY_APPLICATION_SUCCESS, create and execute an ACTIVATE_APPLICATION plan to deploy to K8s; if it is already DEPLOY_APPLICATION_SUCCESS, it is already serving traffic and no activation is needed', false),
       ],
       preconditions: {},
-      expectedResult: 'A new DevPanel application exists with status UNDEPLOY_APPLICATION_SUCCESS. It must be activated before it serves traffic.',
+      expectedResult: 'A new DevPanel application exists. If its status is UNDEPLOY_APPLICATION_SUCCESS it must be activated before it serves traffic; if DEPLOY_APPLICATION_SUCCESS it is already deployed.',
       rollback: 'Delete the newly-created application/project if creation partially succeeds and cleanup is safe.'
     });
   }
@@ -65,10 +65,13 @@ export class PlanService {
     });
   }
 
-  async activatePlan(application: string, activateConfig: ActivateConfig, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
+  async activatePlan(application: string, activateConfig: ActivateConfig, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
     if (app.status !== 'UNDEPLOY_APPLICATION_SUCCESS') {
-      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Expected "UNDEPLOY_APPLICATION_SUCCESS" before activation.`);
+      if (app.status === 'DEPLOY_APPLICATION_SUCCESS') {
+        throw new Error(`Application ${app.name ?? app.id} is already deployed (DEPLOY_APPLICATION_SUCCESS); no activation is needed. Verify its status and URL with devpanel_list_applications or devpanel_get_application.`);
+      }
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Activation requires status UNDEPLOY_APPLICATION_SUCCESS; check the current status with devpanel_get_application before retrying.`);
     }
     return this.createPlan({
       action: 'ACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
@@ -82,7 +85,7 @@ export class PlanService {
       ],
       preconditions: snapshot(app),
       expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
-      rollback: 'Call devpanel_deactivate_application to undeploy from K8s (separate plan).'
+      rollback: 'Undeploy via the DevPanel deactivate endpoint (UI or API); a devpanel_deactivate_application MCP tool is not yet implemented.'
     });
   }
 

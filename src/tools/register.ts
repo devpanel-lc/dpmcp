@@ -140,7 +140,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   // ---- Plan creation tools ----
 
   server.registerTool('devpanel_plan_create_application', {
-    description: 'PLAN ONLY. Validate inputs and create an immutable proposed plan to create a DevPanel application. Does not change DevPanel. After this plan succeeds, create an activate plan to deploy to K8s.',
+    description: 'PLAN ONLY. Validate inputs and create an immutable proposed plan to create a DevPanel application. Does not change DevPanel. After this plan succeeds, read the created application status: if UNDEPLOY_APPLICATION_SUCCESS, create and execute an activate plan to deploy to K8s; if it is already DEPLOY_APPLICATION_SUCCESS, it is already serving traffic and no activation is needed.',
     inputSchema: {
       ...wsOpt,
       name: z.string().min(1).describe('Project/application display name'),
@@ -152,9 +152,9 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   }, async (args) => text({ plan: await plans.createApplicationPlan(args, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_activate_application', {
-    description: 'PLAN ONLY. Create an immutable proposed plan to activate (deploy to K8s) an existing DevPanel application. The application must be in UNDEPLOY_APPLICATION_SUCCESS status.',
+    description: 'PLAN ONLY. Create an immutable proposed plan to activate (deploy to K8s) an existing DevPanel application. The application must be in UNDEPLOY_APPLICATION_SUCCESS status; if it is already in DEPLOY_APPLICATION_SUCCESS status, no activation is needed.',
     inputSchema: {
-      ...wsOpt,
+      workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
       application: z.string().min(1).describe('Application ID, name, or search query'),
       groupType: z.enum(['spot', 'on-demand']).default('on-demand'),
       capacity: z.string().default('micro'),
@@ -183,7 +183,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
       isEnableBasicAuth: args.isEnableBasicAuth,
       storage: args.storage,
     };
-    return text({ plan: await plans.activatePlan(args.application, activateConfig, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' });
+    return text({ plan: await plans.activatePlan(args.application, activateConfig, currentOwnerId(), args.workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' });
   });
 
   server.registerTool('devpanel_plan_backup_application', {

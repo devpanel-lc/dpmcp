@@ -4,6 +4,9 @@ import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRe
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
 
+const ACTIVATE_POLL_MAX_ATTEMPTS = 60;
+const ACTIVATE_POLL_INTERVAL_MS = 2000;
+
 function asRecord(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
   return v as Record<string, unknown>;
@@ -220,7 +223,19 @@ export class RealDevPanelClient implements DevPanelClient {
       `/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/activate`,
       { method: 'PATCH', body: JSON.stringify(actConfig) },
     );
-    return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    // Activation is async: the endpoint returns immediately while a background task deploys to K8s.
+    // Poll the list endpoint until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded).
+    // On timeout, return the last observed status so slow deployments still surface as SUCCEEDED
+    // plans for the agent to verify with devpanel_list_applications.
+    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'DEPLOY_APPLICATION_SUCCESS'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
+      const listRaw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications?pageIndex=1&pageSize=20`);
+      const items = extractItems(listRaw, 'applications', 'data', 'items');
+      const current = items.find(item => firstString(asRecord(item), '_id', 'id', 'applicationId') === app.id);
+      if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    }
+    return last;
   }
 
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
+import { RealDevPanelClient } from '../src/clients/real-devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
 import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
@@ -406,7 +407,7 @@ describe('activate flow', () => {
     expect(app.status).toBe('DEPLOY_APPLICATION_SUCCESS');
   });
 
-  it('rejects activate when app is not in UNDEPLOY_APPLICATION_SUCCESS status', async () => {
+  it('rejects activate when app is already deployed', async () => {
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);
@@ -418,7 +419,52 @@ describe('activate flow', () => {
 
     await expect(plans.activatePlan('app_demo_1', {
       groupType: 'on-demand', capacity: 'micro',
-    })).rejects.toThrow('Expected "UNDEPLOY_APPLICATION_SUCCESS"');
+    })).rejects.toThrow('already deployed (DEPLOY_APPLICATION_SUCCESS); no activation is needed');
+  });
+
+  it('activatePlan scopes resolution to the given workspace', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    }, 'local', 'ws_mock_1');
+    expect(plan.action).toBe('ACTIVATE_APPLICATION');
+
+    await expect(plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    }, 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+  });
+
+  it('real client activateApplication polls until DEPLOY_APPLICATION_SUCCESS', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    const appJson = (status: string) => ({ _id: 'app_1', status, project: { _id: 'p_1', workspace: { _id: 'ws_1' } } });
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith('/activate')) {
+        return { ok: true, text: async () => JSON.stringify(appJson('DEPLOYING')) };
+      }
+      polls += 1;
+      return { ok: true, text: async () => JSON.stringify({ items: [appJson(polls === 1 ? 'DEPLOYING' : 'DEPLOY_APPLICATION_SUCCESS')] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const promise = client.activateApplication(
+        { id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' },
+        { groupType: 'on-demand', capacity: 'micro' },
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result.status).toBe('DEPLOY_APPLICATION_SUCCESS');
+      expect(polls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('create plan includes name and notes activate step', async () => {
