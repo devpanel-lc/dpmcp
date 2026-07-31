@@ -99,12 +99,6 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ owner, repoName, repoId, provider }) => text(await dp.listRepositoryBranches(owner, repoName, repoId, provider)));
 
-  server.registerTool('devpanel_get_git_token_status', {
-    description: 'Read-only. Check whether a personal Git access token is configured for the authenticated user.',
-    inputSchema: {},
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => text(await dp.getGitTokenStatus()));
-
   server.registerTool('devpanel_set_git_token', {
     description: 'MUTATION. Set or update a personal Git access token for a provider (e.g. github, gitlab, bitbucket). Required for private repositories.',
     inputSchema: { token: z.string().min(1), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB'), username: z.string().min(1) },

@@ -145,10 +145,6 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(this.gitBranches);
   }
 
-  async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {
-    return { hasPersonalToken: this.personalTokenSet, provider: this.gitTokenProvider };
-  }
-
   async setGitToken(_token: string, provider: string, _username: string): Promise<void> {
     this.personalTokenSet = true;
     this.gitTokenProvider = provider;

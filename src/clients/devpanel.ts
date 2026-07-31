@@ -39,7 +39,6 @@ export interface DevPanelClient {
   listGitOwners(provider?: string): Promise<GitOwnerRef[]>;
   listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]>;
   listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]>;
-  getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }>;
   setGitToken(token: string, provider: string, username: string): Promise<void>;
   removeGitToken(provider: string): Promise<void>;
 }

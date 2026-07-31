@@ -570,26 +570,4 @@ describe('git provider discovery', () => {
     expect(branches.length).toBeGreaterThan(0);
     expect(branches[0]).toHaveProperty('name');
   });
-
-  it('getGitTokenStatus returns false initially', async () => {
-    const dp = new MockDevPanelClient();
-    const status = await dp.getGitTokenStatus();
-    expect(status.hasPersonalToken).toBe(false);
-  });
-
-  it('setGitToken updates token status', async () => {
-    const dp = new MockDevPanelClient();
-    await dp.setGitToken('ghp_test123', 'github', 'myuser');
-    const status = await dp.getGitTokenStatus();
-    expect(status.hasPersonalToken).toBe(true);
-    expect(status.provider).toBe('github');
-  });
-
-  it('removeGitToken clears token status', async () => {
-    const dp = new MockDevPanelClient();
-    await dp.setGitToken('ghp_test123', 'github', 'myuser');
-    await dp.removeGitToken('github');
-    const status = await dp.getGitTokenStatus();
-    expect(status.hasPersonalToken).toBe(false);
-  });
 });

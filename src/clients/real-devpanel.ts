@@ -284,14 +284,6 @@ export class RealDevPanelClient implements DevPanelClient {
     };
   }
 
-  async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {
-    const raw = await this.request('/api/v2/users/gitToken');
-    const r = asRecord(raw);
-    const tokenValue = r.token ?? r.tokenValue;
-    const hasToken = tokenValue !== undefined && tokenValue !== null && tokenValue !== '';
-    return { hasPersonalToken: hasToken, provider: firstString(r, 'provider') };
-  }
-
   async setGitToken(token: string, provider: string, username: string): Promise<void> {
     await this.request('/api/v2/users/gitToken', {
       method: 'PATCH',
