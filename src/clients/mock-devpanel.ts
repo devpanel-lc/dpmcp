@@ -1,10 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import type { ApplicationRef, BackupRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
 import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
   private apps = new Map<string, ApplicationRef>();
   private backups = new Map<string, BackupRef[]>();
+
+  private gitOwners: GitOwnerRef[] = [
+    { id: 'owner_1', name: 'my-org', provider: 'github', avatarUrl: 'https://avatars.githubusercontent.com/u/1' },
+  ];
+  private gitRepos: GitRepoRef[] = [
+    { id: 'repo_1', name: 'my-repo', owner: 'my-org', provider: 'github', fullName: 'my-org/my-repo', defaultBranch: 'main', private: false },
+    { id: 'repo_2', name: 'private-repo', owner: 'my-org', provider: 'github', fullName: 'my-org/private-repo', defaultBranch: 'develop', private: true },
+  ];
+  private gitBranches: GitBranchRef[] = [
+    { name: 'main', commitSha: 'abc123' },
+    { name: 'develop', commitSha: 'def456' },
+    { name: 'feature/new-feature', commitSha: 'ghi789' },
+  ];
+  private personalTokenSet = false;
+  private gitTokenProvider?: string;
 
   constructor() {
     const app: ApplicationRef = {
@@ -54,6 +69,35 @@ export class MockDevPanelClient implements DevPanelClient {
     };
     this.apps.set(app.id, app);
     return structuredClone(app);
+  }
+
+  async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {
+    const result = provider ? this.gitOwners.filter(o => o.provider.toLowerCase() === provider.toLowerCase()) : this.gitOwners;
+    return structuredClone(result);
+  }
+
+  async listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]> {
+    let result = this.gitRepos;
+    if (owner) result = result.filter(r => r.owner === owner);
+    if (provider) result = result.filter(r => r.provider.toLowerCase() === provider.toLowerCase());
+    return structuredClone(result);
+  }
+
+  async listRepositoryBranches(owner: string, repoName: string, _repoId: string): Promise<GitBranchRef[]> {
+    return structuredClone(this.gitBranches);
+  }
+
+  async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {
+    return { hasPersonalToken: this.personalTokenSet, provider: this.gitTokenProvider };
+  }
+
+  async setGitToken(_token: string, provider: string, _username: string): Promise<void> {
+    this.personalTokenSet = true;
+    this.gitTokenProvider = provider;
+  }
+
+  async removeGitToken(_provider: string): Promise<void> {
+    this.personalTokenSet = false;
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {

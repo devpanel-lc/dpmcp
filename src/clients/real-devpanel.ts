@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { ApplicationRef, BackupRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
 import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
 
@@ -12,6 +12,16 @@ function asRecord(v: unknown): Record<string, unknown> {
 function firstString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) if (typeof obj[k] === 'string') return obj[k] as string;
   return undefined;
+}
+
+function extractItems(raw: unknown, ...keys: string[]): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  const r = asRecord(raw);
+  for (const k of keys) {
+    const v = r[k];
+    if (Array.isArray(v)) return v;
+  }
+  return [];
 }
 
 export class RealDevPanelClient implements DevPanelClient {
@@ -123,6 +133,88 @@ export class RealDevPanelClient implements DevPanelClient {
       await new Promise(r => setTimeout(r, 2000));
     }
     throw new Error('Timed out waiting for DevPanel application after project creation');
+  }
+
+  async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {
+    const qs = new URLSearchParams({ gitProvider: provider.toUpperCase(), isUsePersonalToken: '1' });
+    const raw = await this.request(`/api/v2/users/git-owners?${qs}`);
+    const items = extractItems(raw, 'gitOwners', 'data', 'items');
+    return items.map(item => {
+      const r = asRecord(item);
+      return {
+        id: firstString(r, '_id', 'id', 'ownerId', 'login') ?? '',
+        name: firstString(r, 'name', 'owner', 'login') ?? '',
+        provider: firstString(r, 'provider', 'gitProvider') ?? provider.toUpperCase(),
+        avatarUrl: firstString(r, 'avatarUrl', 'avatar_url'),
+      };
+    });
+  }
+
+  async listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]> {
+    const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
+    if (owner) qs.set('owner', owner);
+    if (provider) qs.set('provider', provider);
+    const raw = await this.request(`/api/v2/users/repositories?${qs}`);
+    const items = extractItems(raw, 'repositories', 'data', 'items');
+    if (items.length === 0 && Array.isArray(raw)) {
+      return raw.map(item => this.normalizeRepo(item));
+    }
+    return items.map(item => this.normalizeRepo(item));
+  }
+
+  private normalizeRepo(raw: unknown): GitRepoRef {
+    const r = asRecord(raw);
+    return {
+      id: firstString(r, '_id', 'id', 'repoId', 'repositoryId') ?? '',
+      name: firstString(r, 'name', 'repoName', 'repositoryName') ?? '',
+      owner: firstString(r, 'owner', 'ownerName', 'repositoryOwner') ?? '',
+      provider: firstString(r, 'provider', 'gitProvider', 'repositoryProvider') ?? '',
+      fullName: firstString(r, 'fullName', 'full_name'),
+      defaultBranch: firstString(r, 'defaultBranch', 'default_branch'),
+      private: r.private === true || r.isPrivate === true,
+    };
+  }
+
+  async listRepositoryBranches(owner: string, repoName: string, repoId: string): Promise<GitBranchRef[]> {
+    const encodedOwner = encodeURIComponent(owner);
+    const encodedName = encodeURIComponent(repoName);
+    const encodedId = encodeURIComponent(repoId);
+    const raw = await this.request(`/api/v2/users/repositories/${encodedName}/${encodedId}/branches?owner=${encodedOwner}`);
+    const items = extractItems(raw, 'branches', 'data', 'items');
+    if (items.length === 0 && Array.isArray(raw)) {
+      return raw.map(item => this.normalizeBranch(item));
+    }
+    return items.map(item => this.normalizeBranch(item));
+  }
+
+  private normalizeBranch(raw: unknown): GitBranchRef {
+    const r = asRecord(raw);
+    return {
+      name: firstString(r, 'name', 'branchName', 'branch') ?? String(r.name ?? ''),
+      commitSha: firstString(r, 'commitSha', 'commit_sha', 'sha'),
+    };
+  }
+
+  async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {
+    const raw = await this.request('/api/v2/users/gitToken');
+    const r = asRecord(raw);
+    const tokenValue = r.token ?? r.tokenValue;
+    const hasToken = tokenValue !== undefined && tokenValue !== null && tokenValue !== '';
+    return { hasPersonalToken: hasToken, provider: firstString(r, 'provider') };
+  }
+
+  async setGitToken(token: string, provider: string, username: string): Promise<void> {
+    await this.request('/api/v2/users/gitToken', {
+      method: 'PATCH',
+      body: JSON.stringify({ gitProvider: provider.toUpperCase(), username, tokenValue: token }),
+    });
+  }
+
+  async removeGitToken(provider: string): Promise<void> {
+    await this.request('/api/v2/users/gitToken', {
+      method: 'DELETE',
+      body: JSON.stringify({ gitProvider: provider.toUpperCase() }),
+    });
   }
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {

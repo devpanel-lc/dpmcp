@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { ApplicationRef, BackupRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, GitOwnerRef, GitRepoRef, GitBranchRef } from '../domain/types.js';
 import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
@@ -58,5 +58,29 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     return this.client().deleteApplication(app);
+  }
+
+  async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {
+    return this.client().listGitOwners(provider);
+  }
+
+  async listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]> {
+    return this.client().listRepositories(owner, provider);
+  }
+
+  async listRepositoryBranches(owner: string, repoName: string, repoId: string): Promise<GitBranchRef[]> {
+    return this.client().listRepositoryBranches(owner, repoName, repoId);
+  }
+
+  async getGitTokenStatus(): Promise<{ hasPersonalToken: boolean; provider?: string }> {
+    return this.client().getGitTokenStatus();
+  }
+
+  async setGitToken(token: string, provider: string, username: string): Promise<void> {
+    return this.client().setGitToken(token, provider, username);
+  }
+
+  async removeGitToken(provider: string): Promise<void> {
+    return this.client().removeGitToken(provider);
   }
 }

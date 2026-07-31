@@ -59,6 +59,44 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ application }) => { const app = await resolver.resolve(application); return text(await dp.listBackups(app)); });
 
+  // ---- Git provider tools ----
+
+  server.registerTool('devpanel_list_git_owners', {
+    description: 'Read-only. List connected Git providers and organizations (e.g. GitHub orgs/users). Requires OAuth or personal token to be configured first.',
+    inputSchema: { provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ provider }) => text(await dp.listGitOwners(provider)));
+
+  server.registerTool('devpanel_list_repositories', {
+    description: 'Read-only. Search accessible Git repositories from connected providers.',
+    inputSchema: { owner: z.string().optional(), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).optional() },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ owner, provider }) => text(await dp.listRepositories(owner, provider)));
+
+  server.registerTool('devpanel_list_repository_branches', {
+    description: 'Read-only. List branches for a specific Git repository.',
+    inputSchema: { owner: z.string().min(1), repoName: z.string().min(1), repoId: z.string().min(1) },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ owner, repoName, repoId }) => text(await dp.listRepositoryBranches(owner, repoName, repoId)));
+
+  server.registerTool('devpanel_get_git_token_status', {
+    description: 'Read-only. Check whether a personal Git access token is configured for the authenticated user.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => text(await dp.getGitTokenStatus()));
+
+  server.registerTool('devpanel_set_git_token', {
+    description: 'MUTATION. Set or update a personal Git access token for a provider (e.g. github, gitlab, bitbucket). Required for private repositories.',
+    inputSchema: { token: z.string().min(1), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB'), username: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ token, provider, username }) => { await dp.setGitToken(token, provider, username); return text({ status: 'ok' }); });
+
+  server.registerTool('devpanel_remove_git_token', {
+    description: 'MUTATION. Remove a personal Git access token for a provider.',
+    inputSchema: { provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async ({ provider }) => { await dp.removeGitToken(provider); return text({ status: 'ok' }); });
+
   server.registerTool('devpanel_plan_create_application', {
     description: 'PLAN ONLY. Validate inputs and create an immutable proposed plan to create a DevPanel application. Does not change DevPanel.',
     inputSchema: {

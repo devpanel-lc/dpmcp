@@ -338,3 +338,65 @@ describe('token scoped client and owner identity', () => {
     expect(plan.ownerId).toBe('local');
   });
 });
+
+describe('git provider discovery', () => {
+  it('listGitOwners returns connected providers', async () => {
+    const dp = new MockDevPanelClient();
+    const owners = await dp.listGitOwners();
+    expect(owners.length).toBeGreaterThan(0);
+    expect(owners[0]).toHaveProperty('id');
+    expect(owners[0]).toHaveProperty('name');
+    expect(owners[0]).toHaveProperty('provider');
+  });
+
+  it('listGitOwners filters by provider', async () => {
+    const dp = new MockDevPanelClient();
+    const owners = await dp.listGitOwners('GITLAB');
+    expect(owners).toHaveLength(0);
+    const github = await dp.listGitOwners('github');
+    expect(github.length).toBeGreaterThan(0);
+    expect(github.every(o => o.provider === 'github')).toBe(true);
+  });
+
+  it('listRepositories returns repos with optional filters', async () => {
+    const dp = new MockDevPanelClient();
+    const all = await dp.listRepositories();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all[0]).toHaveProperty('id');
+    expect(all[0]).toHaveProperty('name');
+    expect(all[0]).toHaveProperty('owner');
+    expect(all[0]).toHaveProperty('provider');
+
+    const filtered = await dp.listRepositories('nonexistent');
+    expect(filtered).toHaveLength(0);
+  });
+
+  it('listRepositoryBranches returns branches', async () => {
+    const dp = new MockDevPanelClient();
+    const branches = await dp.listRepositoryBranches('my-org', 'my-repo', 'repo_1');
+    expect(branches.length).toBeGreaterThan(0);
+    expect(branches[0]).toHaveProperty('name');
+  });
+
+  it('getGitTokenStatus returns false initially', async () => {
+    const dp = new MockDevPanelClient();
+    const status = await dp.getGitTokenStatus();
+    expect(status.hasPersonalToken).toBe(false);
+  });
+
+  it('setGitToken updates token status', async () => {
+    const dp = new MockDevPanelClient();
+    await dp.setGitToken('ghp_test123', 'github', 'myuser');
+    const status = await dp.getGitTokenStatus();
+    expect(status.hasPersonalToken).toBe(true);
+    expect(status.provider).toBe('github');
+  });
+
+  it('removeGitToken clears token status', async () => {
+    const dp = new MockDevPanelClient();
+    await dp.setGitToken('ghp_test123', 'github', 'myuser');
+    await dp.removeGitToken('github');
+    const status = await dp.getGitTokenStatus();
+    expect(status.hasPersonalToken).toBe(false);
+  });
+});

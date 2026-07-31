@@ -21,6 +21,28 @@ export type PlanAction =
 
 export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
 
+export interface GitOwnerRef {
+  id: string;
+  name: string;
+  provider: string;
+  avatarUrl?: string;
+}
+
+export interface GitRepoRef {
+  id: string;
+  name: string;
+  owner: string;
+  provider: string;
+  fullName?: string;
+  defaultBranch?: string;
+  private?: boolean;
+}
+
+export interface GitBranchRef {
+  name: string;
+  commitSha?: string;
+}
+
 export type ErrorCode =
   | 'PLAN_NOT_FOUND'
   | 'PLAN_EXPIRED'
