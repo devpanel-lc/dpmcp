@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { config } from '../config.js';
 
-export interface CreateProfile {
+interface CreateProfile {
   verified?: boolean;
   payload: Record<string, unknown>;
 }

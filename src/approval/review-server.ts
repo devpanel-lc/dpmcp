@@ -1,13 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { PlanStore } from '../stores/plan-store.js';
 import { config } from '../config.js';
+import { esc } from '../utils/escape.js';
 
-function esc(v: unknown): string {
-  return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-}
-
-export function startApprovalReviewServer(store: PlanStore): void {
-  const server = createServer(async (req, res) => {
+/**
+ * Request handler for the external review UI (GET /review/:planId +
+ * POST approve/reject). Shared by:
+ * - the stdio-mode loopback server (startApprovalReviewServer), and
+ * - the public http-mode express app (mounted at the app root, so `req.url`
+ *   still contains the full /review/... path).
+ */
+export function createReviewHandler(store: PlanStore): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', config.approvalPublicBaseUrl);
       const match = url.pathname.match(/^\/review\/([^/]+)$/);
@@ -51,7 +55,13 @@ export function startApprovalReviewServer(store: PlanStore): void {
       }
       return send(res, 405, 'Method not allowed');
     } catch (e) { return send(res, 500, e instanceof Error ? e.message : String(e)); }
-  });
+  };
+}
+
+/** Start the stdio-mode review UI server on the approval host/port. */
+export function startApprovalReviewServer(store: PlanStore): void {
+  const handler = createReviewHandler(store);
+  const server = createServer((req, res) => { void handler(req, res); });
   server.listen(config.approvalPort, config.approvalHost, () => {
     console.error(`[approval] review UI listening at ${config.approvalPublicBaseUrl}`);
   });

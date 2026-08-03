@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
 import { RealDevPanelClient } from '../src/clients/real-devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
@@ -6,7 +6,8 @@ import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
 import { ApprovalService } from '../src/approval/approval-service.js';
 import { hashPlan } from '../src/utils/hash.js';
-import { currentOwnerId, TokenScopedDevPanelClient, tokenStorage } from '../src/clients/token-scoped-client.js';
+import { currentOwnerId, TokenScopedDevPanelClient } from '../src/clients/token-scoped-client.js';
+import { clearSession, saveSession } from '../src/auth/session.js';
 import type { ChangePlan } from '../src/domain/types.js';
 import { config } from '../src/config.js';
 
@@ -281,56 +282,62 @@ describe('plan hash integrity', () => {
   });
 });
 
-describe('token scoped client and owner identity', () => {
-  it('currentOwnerId() returns "local" outside token context', () => {
+describe('session-scoped client and owner identity', () => {
+  const testSession = {
+    accessToken: 'access-token-1',
+    idToken: 'id-token-1',
+    refreshToken: 'refresh-token-1',
+    sub: 'c979c90e-9081-7091-a748-b2e15604c2ef',
+    email: 'lc@devpanel.com',
+    expiresAt: Date.now() + 60_000,
+  };
+
+  beforeEach(() => {
+    clearSession();
+  });
+
+  afterEach(() => {
+    clearSession();
+  });
+
+  it('currentOwnerId() returns "local" with no session', () => {
     expect(currentOwnerId()).toBe('local');
   });
 
-  it('currentOwnerId() returns SHA-256 hash inside token context', () => {
-    tokenStorage.run('test-token-123', () => {
-      const ownerId = currentOwnerId();
-      expect(ownerId).not.toBe('local');
-      expect(ownerId).toMatch(/^[a-f0-9]{64}$/);
-    });
+  it('currentOwnerId() returns the Cognito sub from the session', () => {
+    saveSession(testSession);
+    expect(currentOwnerId()).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
-  it('currentOwnerId() returns consistent hash for same token', () => {
-    tokenStorage.run('consistent-token', () => {
-      const id1 = currentOwnerId();
-      const id2 = currentOwnerId();
-      expect(id1).toBe(id2);
-    });
+  it('currentOwnerId() is consistent across calls for the same session', () => {
+    saveSession(testSession);
+    expect(currentOwnerId()).toBe(currentOwnerId());
   });
 
-  it('currentOwnerId() returns different hash for different tokens', () => {
-    let idA: string;
-    let idB: string;
-    tokenStorage.run('token-a', () => { idA = currentOwnerId(); });
-    tokenStorage.run('token-b', () => { idB = currentOwnerId(); });
-    expect(idA!).not.toBe(idB!);
+  it('currentOwnerId() returns a different owner for a different session', () => {
+    saveSession(testSession);
+    const idA = currentOwnerId();
+    saveSession({ ...testSession, sub: 'other-sub-456' });
+    expect(idA).not.toBe(currentOwnerId());
   });
 
-  it('TokenScopedDevPanelClient falls back to mock outside token context', async () => {
+  it('TokenScopedDevPanelClient falls back to mock in mock mode', async () => {
     const client = new TokenScopedDevPanelClient();
     const apps = await client.listApplications('ws_mock_1');
     expect(Array.isArray(apps)).toBe(true);
   });
 
-  it('plan created inside token context carries ownerId', async () => {
+  it('plan created with a session carries ownerId = sub', async () => {
+    saveSession(testSession);
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);
 
-    let plan: ChangePlan;
-    await tokenStorage.run('user-token', async () => {
-      plan = await plans.backupPlan('app_demo_1', currentOwnerId());
-    });
-
-    const expectedOwner = await tokenStorage.run('user-token', () => currentOwnerId());
-    expect(plan!.ownerId).toBe(expectedOwner);
+    const plan = await plans.backupPlan('app_demo_1', currentOwnerId());
+    expect(plan.ownerId).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
-  it('plan created outside token context carries ownerId "local"', async () => {
+  it('plan created without a session carries ownerId "local"', async () => {
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);

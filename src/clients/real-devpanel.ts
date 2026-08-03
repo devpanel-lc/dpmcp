@@ -2,6 +2,7 @@ import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRe
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
+import { getAccessToken, getLoginUrl, refreshNow, clearSession } from '../auth/session.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 150;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
@@ -53,10 +54,20 @@ export class RealDevPanelClient implements DevPanelClient {
   constructor(private readonly accessToken: string) { }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    return this.requestWithToken(path, init, this.accessToken, false);
+  }
+
+  /**
+   * Single upstream request path. On DevPanel 401 the SSO session is refreshed
+   * (once) and the request retried with the fresh access token. If refresh
+   * fails or the retry is also rejected, the session has been cleared and the
+   * caller must re-login.
+   */
+  private async requestWithToken(path: string, init: RequestInit, token: string, retried: boolean): Promise<unknown> {
     const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, '')}${path}`, {
       ...init,
       headers: {
-        authorization: `Bearer ${this.accessToken}`,
+        authorization: `Bearer ${token}`,
         'content-type': 'application/json',
         ...(init.headers ?? {}),
       },
@@ -64,6 +75,18 @@ export class RealDevPanelClient implements DevPanelClient {
     const text = await response.text();
     let body: unknown = text;
     try { body = text ? JSON.parse(text) : undefined; } catch { /* keep text */ }
+    if (response.status === 401) {
+      if (retried) {
+        clearSession();
+        throw new Error(`DevPanel 401 ${path}: access token rejected after refresh — SSO re-login required (open ${getLoginUrl() || 'the Cognito login URL'})`);
+      }
+      const refreshed = await refreshNow(true);
+      const fresh = refreshed ? getAccessToken() : undefined;
+      if (refreshed && fresh) {
+        return this.requestWithToken(path, init, fresh, true);
+      }
+      throw new Error(`DevPanel 401 ${path}: SSO session expired and could not be refreshed — re-login required (open ${getLoginUrl() || 'the Cognito login URL'})`);
+    }
     if (!response.ok) throw new Error(`DevPanel ${response.status} ${path}: ${text}`);
     return body;
   }

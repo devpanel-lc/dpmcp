@@ -6,6 +6,7 @@ import { PlanService } from '../services/plan-service.js';
 import { ExecutionService } from '../services/execution-service.js';
 import { ApplicationResolver } from '../services/application-resolver.js';
 import { ApprovalService } from '../approval/approval-service.js';
+import type { ElicitFn } from '../approval/providers/form-elicitation.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
 import { currentOwnerId } from '../clients/token-scoped-client.js';
@@ -24,12 +25,40 @@ const wsOpt = {
     .transform(v => v || config.defaultWorkspaceId),
 };
 
+/**
+ * Wrap client-native elicitation:
+ * - http transport: streamable-HTTP clients cannot show a native approval
+ *   dialog, so fail fast — the ApprovalService falls back to the external
+ *   review URL (auto mode) or reports cancelled (form/url modes).
+ * - stdio transport: cap the wait so a client that never answers cannot hang
+ *   the tool call forever; on timeout the service falls back to the external URL.
+ */
+function withElicitationGuard(elicitation: ElicitFn): ElicitFn {
+  const unsupported = config.transport === 'http';
+  return async (...args) => {
+    if (unsupported) {
+      throw new Error('client-native elicitation is not supported on the http transport — use the external review URL');
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        elicitation(...args),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('elicitation timed out waiting for the client dialog')), config.elicitTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+}
+
 export function registerTools(server: McpServer, dp: DevPanelClient, store: PlanStore): void {
   const plans = new PlanService(dp, store);
   const executor = new ExecutionService(dp, store);
   const resolver = new ApplicationResolver(dp);
 
-  const elicitationFn = server.server.elicitInput.bind(server.server);
+  const elicitationFn = withElicitationGuard(server.server.elicitInput.bind(server.server));
   const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
 
   // ---- Discovery tools ----
