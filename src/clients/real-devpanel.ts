@@ -3,8 +3,26 @@ import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient }
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
 
-const ACTIVATE_POLL_MAX_ATTEMPTS = 60;
+const ACTIVATE_POLL_MAX_ATTEMPTS = 150;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
+
+// Mirrors a real DevPanel UI activate request (captured 2026-08-03).
+const ACTIVATE_DEFAULTS = {
+  copyDatabaseFilesType: '',
+  isEnablePgDb: false,
+  isEnableBasicAuth: false,
+  filePermissionLevel: 'stricterPermission',
+  containerImage: 'devpanel/php:8.3-base-rc',
+  secretManager: '',
+  appRoot: '/var/www/html',
+  webRoot: '/var/www/html/web',
+  capacity: 'micro',
+  capacityLimit: 'micro',
+  groupType: 'on-demand',
+  storage: 5,
+  isEnableEditor: false,
+  isEnablePMA: false,
+};
 
 function asRecord(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
@@ -14,6 +32,11 @@ function asRecord(v: unknown): Record<string, unknown> {
 function firstString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) if (typeof obj[k] === 'string') return obj[k] as string;
   return undefined;
+}
+
+function refId(v: unknown, ...keys: string[]): string | undefined {
+  if (typeof v === 'string' && v.length > 0) return v;
+  return firstString(asRecord(v), ...keys);
 }
 
 function extractItems(raw: unknown, ...keys: string[]): unknown[] {
@@ -53,8 +76,8 @@ export class RealDevPanelClient implements DevPanelClient {
     if (!id) throw new Error('Could not determine application id from DevPanel response');
     return {
       id,
-      projectId: firstString(project, '_id', 'id') ?? fallback?.projectId ?? '',
-      workspaceId: firstString(workspace, '_id', 'id') ?? fallback?.workspaceId ?? config.defaultWorkspaceId,
+      projectId: refId(r.project, '_id', 'id', 'projectId') ?? fallback?.projectId ?? '',
+      workspaceId: refId(r.workspace, '_id', 'id', 'workspaceId') ?? refId(project.workspace, '_id', 'id', 'workspaceId') ?? fallback?.workspaceId ?? config.defaultWorkspaceId,
       name: firstString(r, 'applicationName', 'name') ?? firstString(project, 'name') ?? fallback?.name,
       hostname: firstString(r, 'hostname', 'applicationURL') ?? fallback?.hostname,
       status: firstString(r, 'status') ?? fallback?.status,
@@ -218,9 +241,10 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async activateApplication(app: ApplicationRef, actConfig: ActivateConfig): Promise<ApplicationRef> {
     this.requireHierarchy(app);
+    const body = { ...ACTIVATE_DEFAULTS, ...actConfig };
     const raw = await this.request(
       `/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/activate`,
-      { method: 'PATCH', body: JSON.stringify(actConfig) },
+      { method: 'PATCH', body: JSON.stringify(body) },
     );
     let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
     // Activation is async: the endpoint returns immediately while a background task deploys to K8s.

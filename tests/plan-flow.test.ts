@@ -485,6 +485,76 @@ describe('activate flow', () => {
   });
 });
 
+describe('real client application normalization', () => {
+  it('extracts project/workspace ids from scalar or nested refs', async () => {
+    const cases = [
+      {
+        raw: {
+          _id: '6a6ff0f1839cedf7c2dabf0e', name: 'main', originBranch: 'main',
+          applicationName: 'dev-d3d9de-dabefc-j17q66zmj46y',
+          hostname: 'dev-d3d9de-dabefc-j17q66zmj46y.apps-drupalforge.click',
+          project: '6a6ff0f1839cedf7c2dabefc', status: 'UPGRADING',
+        },
+        projectId: '6a6ff0f1839cedf7c2dabefc', workspaceId: 'mock-workspace',
+        name: 'dev-d3d9de-dabefc-j17q66zmj46y', status: 'UPGRADING',
+      },
+      {
+        raw: { _id: 'app_2', status: 'UNDEPLOY_APPLICATION_SUCCESS', project: { _id: 'p_2', workspace: { _id: 'w_2' } } },
+        projectId: 'p_2', workspaceId: 'w_2', name: '', status: 'UNDEPLOY_APPLICATION_SUCCESS',
+      },
+      {
+        raw: { _id: 'app_3', project: 'p_3', workspace: 'w_3' },
+        projectId: 'p_3', workspaceId: 'w_3', name: '', status: undefined,
+      },
+    ];
+
+    for (const c of cases) {
+      const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ items: [c.raw] }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const client = new RealDevPanelClient('test-token');
+        const apps = await client.listApplications('ws_1');
+        expect(apps.length).toBe(1);
+        expect(apps[0].projectId).toBe(c.projectId);
+        expect(apps[0].workspaceId).toBe(c.workspaceId);
+        if (c.name) expect(apps[0].name).toBe(c.name);
+        if (c.status) expect(apps[0].status).toBe(c.status);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+});
+
+describe('create application flow', () => {
+  it('executes a CREATE_APPLICATION plan after approval and the app becomes visible', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createApplicationPlan({
+      workspaceId: 'ws_mock_1', name: 'New App',
+      repositoryOwner: 'test', repositoryName: 'new-repo',
+      repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+    });
+    expect(plan.action).toBe('CREATE_APPLICATION');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approved = await store.get(plan.id);
+    expect(approved).not.toBeNull();
+
+    const result = await executor.executeApprovedPlan(approved!);
+    expect(result.state).toBe('EXECUTED');
+
+    const apps = await dp.listApplications('ws_mock_1');
+    expect(apps.some(a => a.name === 'New App')).toBe(true);
+  });
+});
+
 describe('real create gate', () => {
   const createInput = {
     workspaceId: 'ws_mock_1', name: 'Test App',

@@ -75,6 +75,11 @@ export interface ActivateConfig {
   groupType: 'spot' | 'on-demand';
   capacity: string;
   capacityLimit?: string;
+  copyDatabaseFilesType?: string;
+  isEnablePgDb?: boolean;
+  isEnablePPA?: boolean;
+  filePermissionLevel?: string;
+  secretManager?: string;
   isFromGit?: boolean;
   appRoot?: string;
   webRoot?: string;
