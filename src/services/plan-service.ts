@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
-import type { ChangePlan, PlanAction, PlanStep, Preconditions, RiskLevel } from '../domain/types.js';
-import type { DevPanelClient, CreateApplicationRequest } from '../clients/devpanel.js';
+import type { ChangePlan, PlanAction, PlanStep, Preconditions, RiskLevel, ActivateConfig } from '../domain/types.js';
+import type { DevPanelClient, CreateApplicationRequest, CreateWorkspaceRequest } from '../clients/devpanel.js';
 import type { PlanStore } from '../stores/plan-store.js';
 import { hashPlan } from '../utils/hash.js';
 import { applicationFingerprint } from '../utils/fingerprint.js';
 import { ApplicationResolver } from './application-resolver.js';
+import { assertRealCreateInput, assertRealCreateReady } from '../clients/real-create-gate.js';
 
 const OWNER_ID_LOCAL = 'local';
 
@@ -16,12 +17,14 @@ export class PlanService {
   }
 
   async createApplicationPlan(input: CreateApplicationRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const existing = await this.dp.listApplications(input.repositoryName);
+    await assertRealCreateReady();
+    assertRealCreateInput(input);
+    const existing = await this.dp.listApplications(input.workspaceId, input.repositoryName);
     const same = existing.find(a => (a.name ?? '').toLowerCase() === input.repositoryName.toLowerCase());
     if (same) throw new Error(`Application/project name conflict candidate already exists: ${same.name} (${same.id})`);
     return this.createPlan({
       action: 'CREATE_APPLICATION', risk: 'LOW', ownerId,
-      summary: `Create application from ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
+      summary: `Create application ${input.name} from ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
       target: {
         workspaceId: input.workspaceId,
         repository: `${input.repositoryOwner}/${input.repositoryName}`,
@@ -33,10 +36,59 @@ export class PlanService {
         step(1, 'CREATE_PROJECT', 'Create a DevPanel project using the verified create profile', true),
         step(2, 'WAIT_APPLICATION', 'Wait for the project application to appear', false),
         step(3, 'VERIFY_READY', 'Read the created application and report its status/URL', false),
+        step(4, 'NOTE_ACTIVATE', 'After this plan succeeds, read the created application status: if UNDEPLOY_APPLICATION_SUCCESS, create and execute an ACTIVATE_APPLICATION plan to deploy to K8s; if it is already DEPLOY_APPLICATION_SUCCESS, it is already serving traffic and no activation is needed', false),
       ],
       preconditions: {},
-      expectedResult: 'A new DevPanel application exists and can be read through the Applications API.',
+      expectedResult: 'A new DevPanel application exists. If its status is UNDEPLOY_APPLICATION_SUCCESS it must be activated before it serves traffic; if DEPLOY_APPLICATION_SUCCESS it is already deployed.',
       rollback: 'Delete the newly-created application/project if creation partially succeeds and cleanup is safe.'
+    });
+  }
+
+  async createWorkspacePlan(input: CreateWorkspaceRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const envs = await this.dp.listEnvironments();
+    const env = envs.find(e => e.id === input.environmentId);
+    if (!env) {
+      throw new Error(
+        `Environment not found: ${input.environmentId}. List environments with devpanel_list_environments, or create one in the DevPanel UI first (environment provisioning is not yet supported via MCP).`
+      );
+    }
+    return this.createPlan({
+      action: 'CREATE_WORKSPACE', risk: 'LOW', ownerId,
+      summary: `Create workspace ${input.name} on environment ${env.name ?? input.environmentId}`,
+      target: { environmentId: input.environmentId, environmentName: env.name ?? null },
+      proposedInput: input as unknown as Record<string, unknown>,
+      steps: [
+        step(1, 'VERIFY_ENVIRONMENT', 'Verify the target environment still exists', false),
+        step(2, 'CREATE_WORKSPACE', 'Create the DevPanel workspace on the existing environment', true),
+        step(3, 'VERIFY_WORKSPACE', 'List workspaces and confirm the new workspace is visible', false),
+      ],
+      preconditions: { environmentId: input.environmentId },
+      expectedResult: `A new DevPanel workspace "${input.name}" exists on environment ${env.name ?? input.environmentId}.`,
+      rollback: 'No delete-workspace API is confirmed; rollback is not guaranteed. The existing environment is not modified.'
+    });
+  }
+
+  async activatePlan(application: string, activateConfig: ActivateConfig, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
+    if (app.status !== 'UNDEPLOY_APPLICATION_SUCCESS') {
+      if (app.status === 'DEPLOY_APPLICATION_SUCCESS') {
+        throw new Error(`Application ${app.name ?? app.id} is already deployed (DEPLOY_APPLICATION_SUCCESS); no activation is needed. Verify its status and URL with devpanel_list_applications or devpanel_get_application.`);
+      }
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Activation requires status UNDEPLOY_APPLICATION_SUCCESS; check the current status with devpanel_get_application before retrying.`);
+    }
+    return this.createPlan({
+      action: 'ACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
+      summary: `Activate (deploy) application ${app.name ?? app.id} to K8s`,
+      target: appSummary(app),
+      proposedInput: { ...appSummary(app), activateConfig },
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in UNDEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, 'ACTIVATE_APPLICATION', 'Deploy the application to Kubernetes via PATCH /activate', true),
+        step(3, 'VERIFY_ACTIVATED', 'Poll application status until it reaches DEPLOY_APPLICATION_SUCCESS or fails', false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
+      rollback: 'Undeploy via the DevPanel deactivate endpoint (UI or API); a devpanel_deactivate_application MCP tool is not yet implemented.'
     });
   }
 

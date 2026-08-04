@@ -1,0 +1,10 @@
+{
+  "id": "unverified-test",
+  "verified": false,
+  "notes": "Test fixture: an unverified profile used to assert the plan-time gate rejects real CREATE when the profile is not verified.",
+  "endpoint": "/api/v2/workspaces/{workspaceId}/projects",
+  "method": "POST",
+  "payload": {
+    "name": "{{projectName}}"
+  }
+}

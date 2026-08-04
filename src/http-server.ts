@@ -1,92 +1,172 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { createServer as createSecureServer } from 'node:https';
-import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import type { Server } from 'node:http';
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { tokenStorage } from './clients/token-scoped-client.js';
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  mcpAuthRouter,
+} from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { config } from './config.js';
+import type { PlanStore } from './stores/plan-store.js';
+import { McpOAuthProvider } from './auth/mcp-oauth.js';
+import { handleCallbackRequest, handleLoginRequest } from './auth/login-server.js';
+import { createReviewHandler } from './approval/review-server.js';
 
-function unauthorized(res: ServerResponse): void {
-  res.statusCode = 401;
-  res.setHeader('content-type', 'text/plain; charset=utf-8');
-  res.end('Unauthorized: missing or malformed Authorization header. Expected: Authorization: Bearer <token>');
+/**
+ * Public HTTP server (http transport).
+ *
+ * Routes:
+ *   /healthz                        → liveness probe
+ *   /.well-known/…, /register, /authorize, /token, /revoke → MCP OAuth endpoints
+ *   /authorize/consent              → consent page POST
+ *   /login, /callback               → server-side Cognito login for the DevPanel session
+ *   /mcp                            → MCP endpoint, protected by MCP OAuth bearer tokens
+ *   /review/:planId                 → external plan review/approval UI
+ *
+ * The MCP client authenticates with its own OAuth token for /mcp. The Cognito
+ * access token never leaves the server process.
+ */
+
+/** Reject requests whose Host header is not in the allowlist (anti DNS-rebinding). */
+function hostGuard(): RequestHandler {
+  const allowed = new Set(
+    config.allowedHosts
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return (req: Request, res: Response, next: NextFunction) => {
+    const host = req.headers.host;
+    if (!host) {
+      res.status(400).type('text/plain').send('Missing Host header');
+      return;
+    }
+    let hostname: string;
+    try {
+      hostname = new URL(`http://${host}`).hostname.toLowerCase();
+    } catch {
+      hostname = host.split(':')[0].toLowerCase();
+    }
+    if (!allowed.has(hostname)) {
+      res.status(421).type('text/plain').send('Host not allowed');
+      return;
+    }
+    next();
+  };
 }
 
-export async function startHttpServer(
-  transport: StreamableHTTPServerTransport,
-): Promise<Server> {
-  const handler = async (req: IncomingMessage, res: ServerResponse) => {
-    try {
-      if (req.method === 'GET') {
-        await transport.handleRequest(req, res);
+function isInitializeRequest(body: unknown): boolean {
+  return typeof body === 'object' && body !== null && (body as { method?: unknown }).method === 'initialize';
+}
+
+/**
+ * /mcp request handling with in-memory stateful sessions:
+ * the first request must be `initialize` (creates the session + transport),
+ * subsequent requests carry the mcp-session-id header.
+ */
+function handleMcpRequest(mcpServer: McpServer): RequestHandler {
+  const sessions = new Map<string, StreamableHTTPServerTransport>();
+  return async (req: Request, res: Response) => {
+    const headerValue = req.headers['mcp-session-id'];
+    const sessionId = typeof headerValue === 'string' && headerValue.length > 0 ? headerValue : undefined;
+    const initialize = isInitializeRequest(req.body);
+    let transport = sessionId ? sessions.get(sessionId) : undefined;
+
+    if (!transport) {
+      if (!initialize) {
+        res.status(sessionId ? 404 : 400).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: sessionId ? 'Unknown MCP session' : 'Missing MCP session — call initialize first' },
+          id: null,
+        });
         return;
       }
-
-      if (req.method === 'DELETE') {
-        await transport.handleRequest(req, res);
-        return;
-      }
-
-      const raw = Array.isArray(req.headers['authorization'])
-        ? req.headers['authorization'][0]
-        : req.headers['authorization'];
-      if (!raw || !raw.startsWith('Bearer ')) {
-        return unauthorized(res);
-      }
-      const token = raw.slice(7).trim();
-      if (!token) return unauthorized(res);
-
-      if (!req.headers['content-type']?.startsWith('application/json')) {
-        res.statusCode = 415;
-        res.setHeader('content-type', 'text/plain; charset=utf-8');
-        res.end('Unsupported Media Type: expected application/json');
-        return;
-      }
-
-      await tokenStorage.run(token, () => transport.handleRequest(req, res));
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error('[http] request handler error:', message);
-      if (!res.headersSent) {
-        res.statusCode = 500;
-        res.setHeader('content-type', 'text/plain; charset=utf-8');
-        res.end(`Internal server error: ${message}`);
-      }
+      let initializedSessionId: string | undefined;
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => {
+          initializedSessionId = id;
+          sessions.set(id, transport!);
+        },
+      });
+      transport.onclose = () => {
+        if (initializedSessionId) sessions.delete(initializedSessionId);
+      };
+      await mcpServer.connect(transport);
     }
+
+    await transport.handleRequest(req, res, req.body);
   };
+}
 
-  let proto: string;
-  let httpServer: ReturnType<typeof createServer>;
-
-  if (config.httpTlsEnabled) {
-    if (!config.httpCertPath || !config.httpKeyPath) {
-      throw new Error('DP_HTTP_TLS_ENABLED=true requires DP_HTTP_CERT_PATH and DP_HTTP_KEY_PATH');
-    }
-    httpServer = createSecureServer({
-      cert: readFileSync(config.httpCertPath),
-      key: readFileSync(config.httpKeyPath),
-    }, handler);
-    proto = 'https';
-  } else {
-    httpServer = createServer(handler);
-    proto = 'http';
-    console.error('[http] WARNING: TLS is not enabled. Bearer tokens will be sent in cleartext. Set DP_HTTP_TLS_ENABLED=true for production, or run behind a TLS-terminating reverse proxy.');
+export async function startHttpServer(mcpServer: McpServer, store: PlanStore): Promise<Server> {
+  if (!config.publicBaseUrl) {
+    throw new Error('DP_PUBLIC_BASE_URL is required in http transport mode (e.g. https://dpmcp.up.railway.app)');
   }
+  const baseUrl = new URL(config.publicBaseUrl);
+  const mcpUrl = new URL(`${config.publicBaseUrl}/mcp`);
+  const provider = new McpOAuthProvider();
+  const app = express();
+  app.disable('x-powered-by');
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.listen(config.httpPort, config.httpHost, () => {
-      console.error(`[http] MCP Streamable HTTP listening at ${proto}://${config.httpHost}:${config.httpPort}`);
-      resolve();
-    });
-    httpServer.once('error', reject);
+  app.use(hostGuard());
+
+  app.get('/healthz', (_req, res) => {
+    res.setHeader('cache-control', 'no-store');
+    res.status(200).type('text/plain').send('ok');
   });
 
-  const shutdown = () => {
-    console.error('[http] shutting down...');
-    httpServer.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000).unref();
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  // MCP OAuth authorization server (metadata, dynamic registration, authorize, token, revoke).
+  app.use(
+    mcpAuthRouter({
+      provider,
+      issuerUrl: baseUrl,
+      baseUrl,
+      resourceServerUrl: mcpUrl,
+      resourceName: 'DevPanel Application MCP',
+      scopesSupported: [],
+    }),
+  );
 
-  return httpServer;
+  // Consent page POST from the MCP OAuth flow.
+  app.post('/authorize/consent', express.urlencoded({ extended: false }), (req, res) => {
+    void provider.handleConsentRequest(req, res);
+  });
+
+  // Server-side Cognito login for the DevPanel session.
+  app.get('/login', (req, res) => {
+    void handleLoginRequest(req, res);
+  });
+  app.get('/callback', (req, res) => {
+    void handleCallbackRequest(req, res);
+  });
+
+  // MCP endpoint — protected by MCP OAuth bearer tokens.
+  app.use(
+    '/mcp',
+    requireBearerAuth({
+      verifier: provider,
+      resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
+    }),
+  );
+  app.post('/mcp', express.json({ limit: '4mb' }), handleMcpRequest(mcpServer));
+  app.get('/mcp', handleMcpRequest(mcpServer));
+  app.delete('/mcp', handleMcpRequest(mcpServer));
+
+  // External review UI (last: everything else 404s through its handler).
+  app.use((req, res) => {
+    void createReviewHandler(store)(req, res);
+  });
+
+  const server = await new Promise<Server>((resolve, reject) => {
+    const s = app.listen(config.httpPort, '0.0.0.0', () => resolve(s));
+    s.once('error', reject);
+  });
+
+  console.error(`[http] MCP endpoint: ${config.publicBaseUrl}/mcp (MCP OAuth)`);
+  console.error(`[http] login: ${config.publicBaseUrl}/login`);
+  console.error(`[http] listening on 0.0.0.0:${config.httpPort}`);
+  return server;
 }
