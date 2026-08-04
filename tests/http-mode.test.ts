@@ -200,8 +200,10 @@ describe('http transport server', () => {
     const res = await fetch(`${ctx.base}/login`, { redirect: 'manual' });
     expect(res.status).toBe(302);
     const location = res.headers.get('location') ?? '';
-    expect(location).toContain('cognito.test/oauth2/authorize');
+    expect(location).toContain('cognito.test/login?');
+    expect(location).toContain('identity_provider=COGNITO');
     expect(location).toContain('response_type=code');
+    expect(location).toContain('state=');
   });
 
   it('runs the full MCP OAuth flow: register → authorize → consent → token', async () => {

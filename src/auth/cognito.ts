@@ -44,12 +44,13 @@ export function buildAuthorizeUrl(state: string, codeChallenge: string): string 
     response_type: 'code',
     client_id: config.cognito.clientId,
     redirect_uri: config.cognito.redirectUri,
+    identity_provider: 'COGNITO',
     scope: config.cognito.scopes,
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
   });
-  return `${domain()}/oauth2/authorize?${params.toString()}`;
+  return `${domain()}/login?${params.toString()}`;
 }
 
 /**
@@ -139,7 +140,22 @@ export function generatePkce(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-/** Random CSRF state for the authorize request. */
-export function generateState(): string {
-  return randomBytes(16).toString('base64url');
+/**
+ * Encode the post-login return URL as the OAuth `state` parameter.
+ * DevPanel SSO convention (docs/cognito-sso-reference.md §3.1): the state is
+ * the standard-base64 of the absolute return URL on our own host, never the
+ * raw URL in the query string. The server still verifies `state === pending.state`
+ * on the callback, so the equality check doubles as the CSRF guard.
+ */
+export function buildState(returnUrl: string): string {
+  return Buffer.from(returnUrl, 'utf8').toString('base64');
+}
+
+/**
+ * Decode the return URL from the `state` callback param.
+ * Form-URL decoding turns `+` into a space; restore it before base64-decoding
+ * (docs/cognito-sso-reference.md §3.8).
+ */
+export function decodeState(state: string): string {
+  return Buffer.from(state.replace(/ /g, '+'), 'base64').toString('utf8');
 }

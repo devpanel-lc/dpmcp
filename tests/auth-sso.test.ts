@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { config } from '../src/config.js';
 import {
-  buildAuthorizeUrl, decodeIdToken, exchangeCodeForTokens, generatePkce, generateState, refreshTokens,
+  buildAuthorizeUrl, buildState, decodeIdToken, decodeState, exchangeCodeForTokens, generatePkce, refreshTokens,
 } from '../src/auth/cognito.js';
 import {
   clearSession, ensureFresh, getAccessToken, getLoginUrl, getOwnerId, getSession, refreshNow,
@@ -74,12 +74,14 @@ afterEach(() => {
 });
 
 describe('cognito authorize URL and PKCE', () => {
-  it('builds a hosted-UI authorize URL with PKCE, state and offline_access scope', () => {
+  it('builds a hosted-UI login URL with PKCE, identity_provider, state and DevPanel scopes', () => {
     const url = new URL(buildAuthorizeUrl('state-abc', 'challenge-xyz'));
-    expect(url.origin + url.pathname).toBe(`${config.cognito.domain}/oauth2/authorize`);
+    expect(url.origin + url.pathname).toBe(`${config.cognito.domain}/login`);
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('client_id')).toBe(config.cognito.clientId);
     expect(url.searchParams.get('redirect_uri')).toBe(config.cognito.redirectUri);
+    expect(url.searchParams.get('identity_provider')).toBe('COGNITO');
+    expect(url.searchParams.get('scope')).toContain('phone');
     expect(url.searchParams.get('scope')).toContain('offline_access');
     expect(url.searchParams.get('state')).toBe('state-abc');
     expect(url.searchParams.get('code_challenge')).toBe('challenge-xyz');
@@ -91,8 +93,19 @@ describe('cognito authorize URL and PKCE', () => {
     expect(createHash('sha256').update(verifier).digest('base64url')).toBe(challenge);
   });
 
-  it('generates unique states', () => {
-    expect(generateState().length).toBeGreaterThan(0);
+  it('buildState encodes the return URL; decodeState round-trips it through a URL', () => {
+    const returnUrl = 'http://localhost:3100/review/plan-1';
+    const state = buildState(returnUrl);
+    expect(state).not.toContain(returnUrl);
+    // Round-trip through URLSearchParams (form-URL decoding turns + into spaces).
+    const parsed = new URLSearchParams(new URLSearchParams({ state }).toString()).get('state')!;
+    expect(decodeState(parsed)).toBe(returnUrl);
+  });
+
+  it('decodeState restores + characters lost to form-URL decoding', () => {
+    const state = Buffer.from([0xFF, 0xE0, 0x00]).toString('base64'); // "/+AA" — contains '+'
+    expect(state).toContain('+');
+    expect(decodeState(state.replace(/\+/g, ' '))).toBe(Buffer.from([0xFF, 0xE0, 0x00]).toString('utf8'));
   });
 
   it('decodes sub/email/exp from an id_token', () => {
@@ -268,7 +281,8 @@ describe('login callback server', () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain('Sign in');
-    expect(getLoginUrl()).toContain('/oauth2/authorize');
+    expect(getLoginUrl()).toContain(`${config.cognito.domain}/login?`);
+    expect(getLoginUrl()).toContain('identity_provider=COGNITO');
     expect(getLoginUrl()).toContain('state=');
     expect(getLoginUrl()).toContain('redirect_uri=');
   });

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { config } from '../config.js';
-import { buildAuthorizeUrl, exchangeCodeForTokens, generatePkce, generateState } from './cognito.js';
+import { buildAuthorizeUrl, buildState, decodeState, exchangeCodeForTokens, generatePkce } from './cognito.js';
 import { clearSession, getSession, setLoginUrl, storeTokensFromCognito } from './session.js';
 
 /**
@@ -70,6 +70,41 @@ function send(res: ServerResponse, status: number, contentType: string, body: st
 }
 
 /**
+ * Absolute post-login return URL on our own host (used as the OAuth `state`).
+ * `next` is only honored when it stays on our origin.
+ */
+function resolveReturnUrl(next?: string): string {
+  const base = config.transport === 'http' ? config.publicBaseUrl : `http://localhost:${config.loginCallbackPort}`;
+  if (!base) return '/';
+  if (next) {
+    try {
+      const baseUrl = new URL(base);
+      const target = new URL(next, base);
+      if (target.origin === baseUrl.origin) return target.toString();
+    } catch { /* fall through to the base */ }
+  }
+  return base;
+}
+
+/**
+ * Post-login redirect guard (docs/cognito-sso-reference.md §3.8): only redirect
+ * to URLs on our own origin, and never back into the SSO/auth flow.
+ */
+function safeReturnUrl(candidate: string): string {
+  const base = config.transport === 'http' ? config.publicBaseUrl : `http://localhost:${config.loginCallbackPort}`;
+  if (!base) return '/';
+  try {
+    const baseUrl = new URL(base);
+    const target = new URL(candidate, base);
+    if (target.origin !== baseUrl.origin) return base;
+    if (['/login', '/callback', '/authorize', '/consent', '/mcp'].includes(target.pathname)) return base;
+    return target.toString();
+  } catch {
+    return base;
+  }
+}
+
+/**
  * GET /login — start the Cognito hosted-UI login.
  * - http mode: 302 to Cognito; `next` survives the round trip so the flow
  *   continues (e.g. back to /authorize after sign-in).
@@ -81,9 +116,10 @@ export async function handleLoginRequest(req: IncomingMessage, res: ServerRespon
   const next = url.searchParams.get('next') || undefined;
 
   clearSession();
-  const state = generateState();
+  const returnUrl = resolveReturnUrl(next);
+  const state = buildState(returnUrl);
   const { verifier, challenge } = generatePkce();
-  pending = { state, codeVerifier: verifier, next };
+  pending = { state, codeVerifier: verifier, next: returnUrl };
   const loginUrl = buildAuthorizeUrl(state, challenge);
   setLoginUrl(loginUrl);
   console.error('[sso] Sign in to DevPanel required. Open this URL in your browser:');
@@ -133,13 +169,12 @@ export async function handleCallbackRequest(req: IncomingMessage, res: ServerRes
 
   try {
     const tokens = await exchangeCodeForTokens(code, pending.codeVerifier);
-    const next = pending.next;
     pending = null;
     const session = storeTokensFromCognito(tokens);
     console.error(`[sso] login successful for user ${session.sub}${session.email ? ` (${session.email})` : ''}`);
 
     if (config.transport === 'http') {
-      const redirect = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
+      const redirect = safeReturnUrl(decodeState(state));
       send(res, 302, 'text/plain', 'Login successful — redirecting…', { location: redirect });
       return;
     }
@@ -206,9 +241,10 @@ export function getLoginServer(): Server | null {
 /** Print/open the hosted-UI login URL and arm the callback for this attempt (stdio mode). */
 export async function beginLogin(): Promise<string> {
   clearSession();
-  const state = generateState();
+  const returnUrl = resolveReturnUrl(undefined);
+  const state = buildState(returnUrl);
   const { verifier, challenge } = generatePkce();
-  pending = { state, codeVerifier: verifier };
+  pending = { state, codeVerifier: verifier, next: returnUrl };
   const url = buildAuthorizeUrl(state, challenge);
   setLoginUrl(url);
   console.error('[sso] Sign in to DevPanel required. Open this URL in your browser:');

@@ -65,7 +65,7 @@ export const config = {
     clientSecret: process.env.COGNITO_CLIENT_SECRET ?? '',
     /** Cognito hosted-UI domain, e.g. https://mcp-client-domain.auth.us-west-1.amazoncognito.com */
     domain: env('COGNITO_DOMAIN', ''),
-    scopes: env('COGNITO_SCOPES', 'openid email profile offline_access'),
+    scopes: env('COGNITO_SCOPES', 'phone email openid profile aws.cognito.signin.user.admin offline_access'),
     redirectUri: ssoRedirectUri,
   },
 };
