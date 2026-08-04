@@ -61,6 +61,7 @@ src/utils/                        → hash.ts (SHA-256 plan fingerprint), finger
 
 - **stdout is reserved for MCP** when using stdio — all logs go to `console.error`.
 - `devpanel_approve_and_execute_plan` is the **only** tool that may call mutating DevPanel client methods.
+  - Exception: `devpanel_set_git_token` / `devpanel_remove_git_token` mutate the calling user's credential config directly (user-scoped auth setup, not application state). No other direct-mutation tools may be added.
 - The executor **never** accepts `approved: true` or any mutable action parameters — approval is bound to `plan.hash` via an `ApprovalRecord` written through MCP Elicitation (human response) or external review UI.
 - Plans become `STALE` when preconditions fail (app fingerprint changed, backup disappeared) or TTL expires (`PLAN_TTL_SECONDS`, default 900s).
 - The executor re-reads DevPanel state immediately before mutation (revalidation step).

@@ -1,7 +1,8 @@
-import type { ApplicationRef, BackupRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 
 export interface CreateApplicationRequest {
   workspaceId: string;
+  name: string;
   repositoryOwner: string;
   repositoryName: string;
   repositoryProvider: string;
@@ -11,14 +12,33 @@ export interface CreateApplicationRequest {
   repositoryType?: string;
 }
 
+export interface CreateWorkspaceRequest {
+  name: string;
+  description?: string;
+  environmentId: string;
+  tags?: string[];
+}
+
 export interface DevPanelClient {
-  listApplications(search?: string): Promise<ApplicationRef[]>;
+  listWorkspaces(): Promise<WorkspaceRef[]>;
+  listEnvironments(search?: string): Promise<EnvironmentRef[]>;
+  listProjects(workspaceId: string): Promise<ProjectRef[]>;
+  listProjectTypes(): Promise<ProjectTypeRef[]>;
+  listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]>;
+  listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]>;
   getApplication(app: ApplicationRef): Promise<ApplicationRef>;
   getApplicationActivities(app: ApplicationRef): Promise<unknown>;
   getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown>;
   listBackups(app: ApplicationRef): Promise<BackupRef[]>;
   createApplication(input: CreateApplicationRequest): Promise<ApplicationRef>;
+  createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef>;
+  activateApplication(app: ApplicationRef, config: ActivateConfig): Promise<ApplicationRef>;
   createBackup(app: ApplicationRef): Promise<BackupRef>;
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;
+  listGitOwners(provider?: string): Promise<GitOwnerRef[]>;
+  listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]>;
+  listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]>;
+  setGitToken(token: string, provider: string, username: string): Promise<void>;
+  removeGitToken(provider: string): Promise<void>;
 }

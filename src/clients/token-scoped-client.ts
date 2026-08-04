@@ -1,17 +1,16 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
-import type { ApplicationRef, BackupRef } from '../domain/types.js';
-import type { CreateApplicationRequest, DevPanelClient } from './devpanel.js';
+import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
 import { config } from '../config.js';
+import { getAccessToken, getLoginUrl, getOwnerId } from '../auth/session.js';
 
-export const tokenStorage = new AsyncLocalStorage<string>();
-
+/**
+ * Identity of the plan owner. With SSO this is the Cognito `sub` claim from
+ * the server-side session; without a session it is 'local'.
+ */
 export function currentOwnerId(): string {
-  const token = tokenStorage.getStore();
-  if (!token) return 'local';
-  return createHash('sha256').update(token).digest('hex');
+  return getOwnerId();
 }
 
 export class TokenScopedDevPanelClient implements DevPanelClient {
@@ -19,13 +18,37 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   private client(): DevPanelClient {
     if (config.mode === 'mock') return this.mockClient;
-    const token = tokenStorage.getStore();
-    if (!token) return this.mockClient;
+    const token = getAccessToken();
+    if (!token) {
+      throw new Error(
+        `SSO login required — no DevPanel session. Open ${getLoginUrl() || 'the Cognito hosted-UI login URL'} in your browser and complete sign-in, then retry.`,
+      );
+    }
     return new RealDevPanelClient(token);
   }
 
-  async listApplications(search?: string): Promise<ApplicationRef[]> {
-    return this.client().listApplications(search);
+  async listWorkspaces(): Promise<WorkspaceRef[]> {
+    return this.client().listWorkspaces();
+  }
+
+  async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
+    return this.client().listEnvironments(search);
+  }
+
+  async listProjects(workspaceId: string): Promise<ProjectRef[]> {
+    return this.client().listProjects(workspaceId);
+  }
+
+  async listProjectTypes(): Promise<ProjectTypeRef[]> {
+    return this.client().listProjectTypes();
+  }
+
+  async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
+    return this.client().listApplications(workspaceId, search);
+  }
+
+  async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
+    return this.client().listProjectApplications(workspaceId, projectId);
   }
 
   async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
@@ -48,6 +71,14 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().createApplication(input);
   }
 
+  async createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef> {
+    return this.client().createWorkspace(input);
+  }
+
+  async activateApplication(app: ApplicationRef, activateConfig: ActivateConfig): Promise<ApplicationRef> {
+    return this.client().activateApplication(app, activateConfig);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     return this.client().createBackup(app);
   }
@@ -58,5 +89,25 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     return this.client().deleteApplication(app);
+  }
+
+  async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {
+    return this.client().listGitOwners(provider);
+  }
+
+  async listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]> {
+    return this.client().listRepositories(owner, provider);
+  }
+
+  async listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]> {
+    return this.client().listRepositoryBranches(owner, repoName, repoId, provider);
+  }
+
+  async setGitToken(token: string, provider: string, username: string): Promise<void> {
+    return this.client().setGitToken(token, provider, username);
+  }
+
+  async removeGitToken(provider: string): Promise<void> {
+    return this.client().removeGitToken(provider);
   }
 }

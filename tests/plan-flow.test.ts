@@ -1,11 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
+import { RealDevPanelClient } from '../src/clients/real-devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
 import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
 import { ApprovalService } from '../src/approval/approval-service.js';
 import { hashPlan } from '../src/utils/hash.js';
-import { currentOwnerId, TokenScopedDevPanelClient, tokenStorage } from '../src/clients/token-scoped-client.js';
+import { currentOwnerId, TokenScopedDevPanelClient } from '../src/clients/token-scoped-client.js';
+import { clearSession, saveSession } from '../src/auth/session.js';
 import type { ChangePlan } from '../src/domain/types.js';
 import { config } from '../src/config.js';
 
@@ -280,61 +282,527 @@ describe('plan hash integrity', () => {
   });
 });
 
-describe('token scoped client and owner identity', () => {
-  it('currentOwnerId() returns "local" outside token context', () => {
+describe('session-scoped client and owner identity', () => {
+  const testSession = {
+    accessToken: 'access-token-1',
+    idToken: 'id-token-1',
+    refreshToken: 'refresh-token-1',
+    sub: 'c979c90e-9081-7091-a748-b2e15604c2ef',
+    email: 'lc@devpanel.com',
+    expiresAt: Date.now() + 60_000,
+  };
+
+  beforeEach(() => {
+    clearSession();
+  });
+
+  afterEach(() => {
+    clearSession();
+  });
+
+  it('currentOwnerId() returns "local" with no session', () => {
     expect(currentOwnerId()).toBe('local');
   });
 
-  it('currentOwnerId() returns SHA-256 hash inside token context', () => {
-    tokenStorage.run('test-token-123', () => {
-      const ownerId = currentOwnerId();
-      expect(ownerId).not.toBe('local');
-      expect(ownerId).toMatch(/^[a-f0-9]{64}$/);
-    });
+  it('currentOwnerId() returns the Cognito sub from the session', () => {
+    saveSession(testSession);
+    expect(currentOwnerId()).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
-  it('currentOwnerId() returns consistent hash for same token', () => {
-    tokenStorage.run('consistent-token', () => {
-      const id1 = currentOwnerId();
-      const id2 = currentOwnerId();
-      expect(id1).toBe(id2);
-    });
+  it('currentOwnerId() is consistent across calls for the same session', () => {
+    saveSession(testSession);
+    expect(currentOwnerId()).toBe(currentOwnerId());
   });
 
-  it('currentOwnerId() returns different hash for different tokens', () => {
-    let idA: string;
-    let idB: string;
-    tokenStorage.run('token-a', () => { idA = currentOwnerId(); });
-    tokenStorage.run('token-b', () => { idB = currentOwnerId(); });
-    expect(idA!).not.toBe(idB!);
+  it('currentOwnerId() returns a different owner for a different session', () => {
+    saveSession(testSession);
+    const idA = currentOwnerId();
+    saveSession({ ...testSession, sub: 'other-sub-456' });
+    expect(idA).not.toBe(currentOwnerId());
   });
 
-  it('TokenScopedDevPanelClient falls back to mock outside token context', async () => {
+  it('TokenScopedDevPanelClient falls back to mock in mock mode', async () => {
     const client = new TokenScopedDevPanelClient();
-    const apps = await client.listApplications();
+    const apps = await client.listApplications('ws_mock_1');
     expect(Array.isArray(apps)).toBe(true);
   });
 
-  it('plan created inside token context carries ownerId', async () => {
+  it('plan created with a session carries ownerId = sub', async () => {
+    saveSession(testSession);
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);
 
-    let plan: ChangePlan;
-    await tokenStorage.run('user-token', async () => {
-      plan = await plans.backupPlan('app_demo_1', currentOwnerId());
-    });
-
-    const expectedOwner = await tokenStorage.run('user-token', () => currentOwnerId());
-    expect(plan!.ownerId).toBe(expectedOwner);
+    const plan = await plans.backupPlan('app_demo_1', currentOwnerId());
+    expect(plan.ownerId).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
-  it('plan created outside token context carries ownerId "local"', async () => {
+  it('plan created without a session carries ownerId "local"', async () => {
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);
 
     const plan = await plans.backupPlan('app_demo_1');
     expect(plan.ownerId).toBe('local');
+  });
+});
+
+describe('discovery methods', () => {
+  it('listWorkspaces returns mock workspaces', async () => {
+    const dp = new MockDevPanelClient();
+    const workspaces = await dp.listWorkspaces();
+    expect(workspaces.length).toBeGreaterThan(0);
+    expect(workspaces[0]).toHaveProperty('id');
+    expect(workspaces[0]).toHaveProperty('name');
+  });
+
+  it('listProjects returns workspace-scoped projects', async () => {
+    const dp = new MockDevPanelClient();
+    const projects = await dp.listProjects('ws_mock_1');
+    expect(projects.length).toBeGreaterThan(0);
+    expect(projects[0].workspaceId).toBe('ws_mock_1');
+  });
+
+  it('listProjectTypes returns type definitions', async () => {
+    const dp = new MockDevPanelClient();
+    const types = await dp.listProjectTypes();
+    expect(types.length).toBeGreaterThan(0);
+    expect(types[0]).toHaveProperty('key');
+  });
+
+  it('listApplications is workspace-scoped', async () => {
+    const dp = new MockDevPanelClient();
+    const apps = await dp.listApplications('ws_mock_1');
+    expect(apps.length).toBeGreaterThan(0);
+    const emptyWs = await dp.listApplications('nonexistent');
+    expect(emptyWs).toHaveLength(0);
+  });
+
+  it('listProjectApplications returns scoped apps', async () => {
+    const dp = new MockDevPanelClient();
+    const apps = await dp.listProjectApplications('ws_mock_1', 'project_demo_1');
+    expect(apps.length).toBeGreaterThan(0);
+    expect(apps[0].projectId).toBe('project_demo_1');
+  });
+});
+
+describe('activate flow', () => {
+  it('creates an activate plan and executes it', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro', isFromGit: true,
+      appRoot: '/var/www/html', webRoot: '/var/www/html',
+    });
+
+    expect(plan.action).toBe('ACTIVATE_APPLICATION');
+    expect(plan.steps.length).toBeGreaterThan(0);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.status).toBe('DEPLOY_APPLICATION_SUCCESS');
+  });
+
+  it('rejects activate when app is already deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    await expect(plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    })).rejects.toThrow('already deployed (DEPLOY_APPLICATION_SUCCESS); no activation is needed');
+  });
+
+  it('activatePlan scopes resolution to the given workspace', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    }, 'local', 'ws_mock_1');
+    expect(plan.action).toBe('ACTIVATE_APPLICATION');
+
+    await expect(plans.activatePlan('app_demo_1', {
+      groupType: 'on-demand', capacity: 'micro',
+    }, 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+  });
+
+  it('real client activateApplication polls until DEPLOY_APPLICATION_SUCCESS', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    const appJson = (status: string) => ({ _id: 'app_1', status, project: { _id: 'p_1', workspace: { _id: 'ws_1' } } });
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith('/activate')) {
+        return { ok: true, text: async () => JSON.stringify(appJson('DEPLOYING')) };
+      }
+      polls += 1;
+      return { ok: true, text: async () => JSON.stringify({ items: [appJson(polls === 1 ? 'DEPLOYING' : 'DEPLOY_APPLICATION_SUCCESS')] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const promise = client.activateApplication(
+        { id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' },
+        { groupType: 'on-demand', capacity: 'micro' },
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result.status).toBe('DEPLOY_APPLICATION_SUCCESS');
+      expect(polls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('create plan includes name and notes activate step', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.createApplicationPlan({
+      workspaceId: 'ws_mock_1', name: 'Test App',
+      repositoryOwner: 'test', repositoryName: 'test-repo',
+      repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+    });
+
+    expect(plan.action).toBe('CREATE_APPLICATION');
+    expect(plan.summary).toContain('Test App');
+    const noteStep = plan.steps.find(s => s.operation === 'NOTE_ACTIVATE');
+    expect(noteStep).toBeDefined();
+  });
+});
+
+describe('real client application normalization', () => {
+  it('extracts project/workspace ids from scalar or nested refs', async () => {
+    const cases = [
+      {
+        raw: {
+          _id: '6a6ff0f1839cedf7c2dabf0e', name: 'main', originBranch: 'main',
+          applicationName: 'dev-d3d9de-dabefc-j17q66zmj46y',
+          hostname: 'dev-d3d9de-dabefc-j17q66zmj46y.apps-drupalforge.click',
+          project: '6a6ff0f1839cedf7c2dabefc', status: 'UPGRADING',
+        },
+        projectId: '6a6ff0f1839cedf7c2dabefc', workspaceId: 'mock-workspace',
+        name: 'dev-d3d9de-dabefc-j17q66zmj46y', status: 'UPGRADING',
+      },
+      {
+        raw: { _id: 'app_2', status: 'UNDEPLOY_APPLICATION_SUCCESS', project: { _id: 'p_2', workspace: { _id: 'w_2' } } },
+        projectId: 'p_2', workspaceId: 'w_2', name: '', status: 'UNDEPLOY_APPLICATION_SUCCESS',
+      },
+      {
+        raw: { _id: 'app_3', project: 'p_3', workspace: 'w_3' },
+        projectId: 'p_3', workspaceId: 'w_3', name: '', status: undefined,
+      },
+    ];
+
+    for (const c of cases) {
+      const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ items: [c.raw] }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const client = new RealDevPanelClient('test-token');
+        const apps = await client.listApplications('ws_1');
+        expect(apps.length).toBe(1);
+        expect(apps[0].projectId).toBe(c.projectId);
+        expect(apps[0].workspaceId).toBe(c.workspaceId);
+        if (c.name) expect(apps[0].name).toBe(c.name);
+        if (c.status) expect(apps[0].status).toBe(c.status);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+});
+
+describe('create application flow', () => {
+  it('executes a CREATE_APPLICATION plan after approval and the app becomes visible', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createApplicationPlan({
+      workspaceId: 'ws_mock_1', name: 'New App',
+      repositoryOwner: 'test', repositoryName: 'new-repo',
+      repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+    });
+    expect(plan.action).toBe('CREATE_APPLICATION');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approved = await store.get(plan.id);
+    expect(approved).not.toBeNull();
+
+    const result = await executor.executeApprovedPlan(approved!);
+    expect(result.state).toBe('EXECUTED');
+
+    const apps = await dp.listApplications('ws_mock_1');
+    expect(apps.some(a => a.name === 'New App')).toBe(true);
+  });
+});
+
+describe('real create gate', () => {
+  const createInput = {
+    workspaceId: 'ws_mock_1', name: 'Test App',
+    repositoryOwner: 'test', repositoryName: 'test-repo',
+    repositoryProvider: 'github', branch: 'main', projectType: 'lamp',
+  };
+
+  it('rejects create plan in real mode when real CREATE is disabled', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    config.mode = 'real';
+    config.enableRealCreate = false;
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('Real CREATE is disabled');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+    }
+  });
+
+  it('rejects create plan in real mode when the profile is not verified', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'unverified-test';
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('is not verified');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+
+  it('rejects create plan in real mode when repositoryId is missing', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'drupal11-demo';
+    try {
+      await expect(plans.createApplicationPlan(createInput)).rejects.toThrow('repositoryId is required');
+    } finally {
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+
+  it('real client createApplication sends the verified profile payload', async () => {
+    let capturedBody: string | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && String(url).endsWith('/projects')) {
+        capturedBody = init?.body;
+        return { ok: true, text: async () => JSON.stringify({ _id: 'project_123', name: 'Test App', workspace: 'ws_1' }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ items: [{ _id: 'app_1', status: 'UNDEPLOY_APPLICATION_SUCCESS', name: 'Test App', project: { _id: 'project_123', workspace: { _id: 'ws_1' } } }] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const origMode = config.mode;
+    const origEnable = config.enableRealCreate;
+    const origProfile = config.createProfile;
+    config.mode = 'real';
+    config.enableRealCreate = true;
+    config.createProfile = 'drupal11-demo';
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const app = await client.createApplication({
+        workspaceId: 'ws_1', name: 'Test App',
+        repositoryOwner: 'devpanel-lc', repositoryName: 'drupal-11',
+        repositoryProvider: 'GITHUB', repositoryType: 'EXISTING', repositoryId: '1318040997',
+        branch: 'main', projectType: 'drupal11_v2',
+      });
+
+      expect(app.id).toBe('app_1');
+      const body = JSON.parse(capturedBody ?? '{}');
+      expect(body.name).toBe('Test App');
+      expect(body.projectType).toBe('drupal11_v2');
+      expect(body.repositoryId).toBe(1318040997);
+      expect(body.repositoryType).toBe('EXISTING');
+      expect(body.isPrivateRepository).toBe(false);
+      expect(body.isUsePersonalToken).toBe(true);
+      expect(body.instances[0].branchType).toBe('MAIN');
+      expect(body.instances[0].name).toBe('main');
+      expect(body.instances[0].originBranch).toBe('main');
+      expect(JSON.stringify(body)).not.toContain('{{');
+    } finally {
+      vi.unstubAllGlobals();
+      config.mode = origMode;
+      config.enableRealCreate = origEnable;
+      config.createProfile = origProfile;
+    }
+  });
+});
+
+describe('workspace creation flow', () => {
+  it('listEnvironments returns seeded environments and filters by search', async () => {
+    const dp = new MockDevPanelClient();
+    const all = await dp.listEnvironments();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all[0]).toHaveProperty('id');
+    expect(all[0]).toHaveProperty('name');
+
+    const filtered = await dp.listEnvironments('staging');
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].id).toBe('env_mock_2');
+  });
+
+  it('creates a workspace plan, executes after approval, and the workspace appears', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({
+      name: 'Team Workspace', environmentId: 'env_mock_1', description: 'test', tags: ['dev'],
+    });
+
+    expect(plan.action).toBe('CREATE_WORKSPACE');
+    expect(plan.preconditions.environmentId).toBe('env_mock_1');
+    expect(plan.steps.some(s => s.operation === 'CREATE_WORKSPACE' && s.mutates)).toBe(true);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const workspaces = await dp.listWorkspaces();
+    expect(workspaces.some(w => w.name === 'Team Workspace')).toBe(true);
+
+    const succeededPlan = await store.get(plan.id);
+    expect(succeededPlan?.status).toBe('SUCCEEDED');
+  });
+
+  it('rejects plan creation when environment does not exist', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.createWorkspacePlan({
+      name: 'Bad Workspace', environmentId: 'env_missing',
+    })).rejects.toThrow('Environment not found: env_missing');
+  });
+
+  it('marks plan STALE when the environment is removed after approval', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({ name: 'Ephemeral Workspace', environmentId: 'env_mock_1' });
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    dp.removeEnvironment('env_mock_1');
+
+    const approvedPlan = await store.get(plan.id)!;
+    await expect(executor.executeApprovedPlan(approvedPlan!)).rejects.toThrow('Plan is stale');
+
+    const stalePlan = await store.get(plan.id);
+    expect(stalePlan?.status).toBe('STALE');
+  });
+
+  it('rejects duplicate workspace names at execution time', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    const plan = await plans.createWorkspacePlan({ name: 'Default Workspace', environmentId: 'env_mock_1' });
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    await expect(executor.executeApprovedPlan(approvedPlan!)).rejects.toThrow('Workspace name already exists');
+  });
+});
+
+describe('git provider discovery', () => {
+  it('listGitOwners returns connected providers', async () => {
+    const dp = new MockDevPanelClient();
+    const owners = await dp.listGitOwners();
+    expect(owners.length).toBeGreaterThan(0);
+    expect(owners[0]).toHaveProperty('id');
+    expect(owners[0]).toHaveProperty('name');
+    expect(owners[0]).toHaveProperty('provider');
+  });
+
+  it('listGitOwners filters by provider', async () => {
+    const dp = new MockDevPanelClient();
+    const owners = await dp.listGitOwners('GITLAB');
+    expect(owners).toHaveLength(0);
+    const github = await dp.listGitOwners('github');
+    expect(github.length).toBeGreaterThan(0);
+    expect(github.every(o => o.provider === 'github')).toBe(true);
+  });
+
+  it('listRepositories returns repos with optional filters', async () => {
+    const dp = new MockDevPanelClient();
+    const all = await dp.listRepositories();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all[0]).toHaveProperty('id');
+    expect(all[0]).toHaveProperty('name');
+    expect(all[0]).toHaveProperty('owner');
+    expect(all[0]).toHaveProperty('provider');
+
+    const filtered = await dp.listRepositories('nonexistent');
+    expect(filtered).toHaveLength(0);
+  });
+
+  it('listRepositoryBranches returns branches', async () => {
+    const dp = new MockDevPanelClient();
+    const branches = await dp.listRepositoryBranches('my-org', 'my-repo', 'repo_1', 'GITHUB');
+    expect(branches.length).toBeGreaterThan(0);
+    expect(branches[0]).toHaveProperty('name');
   });
 });

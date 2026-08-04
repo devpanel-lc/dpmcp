@@ -114,7 +114,7 @@ DP_DEFAULT_WORKSPACE_ID=...
 
 Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI.
 
-**Real CREATE is intentionally disabled by default.** The supplied OpenAPI confirms `POST /api/v2/workspaces/{workspaceId}/projects` and `CreateProjectDTO`, but it does not document the create-project response or the meaning of `instances[]`. Before enabling real creation:
+**Real CREATE is intentionally disabled by default.** The endpoint contract is documented in the DevPanel OpenAPI (`POST /:workspaceId/projects` → `CreateProjectDTO`), but the OpenAPI's `instances[]` typing conflicts with the captured request shape, so a recorded real payload remains authoritative. Before enabling real creation:
 
 1. Create one application manually in the current DevPanel UI.
 2. Capture the successful Network request + response.
@@ -124,17 +124,6 @@ Read, backup, restore, and delete use endpoints present in the supplied DevPanel
 6. Set `DP_ENABLE_REAL_CREATE=true`.
 
 Do not infer this contract from field names.
-
-## Documentation
-
-- `docs/GOALS_AND_REQUIREMENTS.md`
-- `docs/ARCHITECTURE.md`
-- `docs/SECURITY_AND_APPROVAL.md`
-- `docs/MCP_TOOL_CONTRACTS.md`
-- `docs/DEVPANEL_API_MAPPING.md`
-- `docs/LOCAL_DEVELOPMENT.md`
-- `docs/DEMO_SCRIPT.md`
-- `docs/IMPLEMENTATION_ROADMAP.md`
 
 ## HTTP transport mode (per-user Bearer tokens)
 
