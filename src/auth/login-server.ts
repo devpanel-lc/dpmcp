@@ -87,7 +87,7 @@ function resolveReturnUrl(next?: string): string {
 }
 
 /**
- * Post-login redirect guard (docs/cognito-sso-reference.md §3.8): only redirect
+ * Post-login redirect guard (DevPanel SSO convention): only redirect
  * to URLs on our own origin, and never back into the SSO/auth flow.
  */
 function safeReturnUrl(candidate: string): string {

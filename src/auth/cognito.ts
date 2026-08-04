@@ -7,7 +7,10 @@ import { config } from '../config.js';
  * exchanges the code at the token endpoint, and renews via the refresh grant.
  * DevPanel validates the access_token itself; this module does not verify JWTs.
  *
- * Reference: docs/SSO-COGNITO.md, docs/cognito-sso-reference.md.
+ * DevPanel SSO convention: entry point is `{domain}/login` with
+ * `identity_provider=COGNITO`; the return URL travels base64-encoded in
+ * `state`; the `+` character must be restored before base64-decoding state
+ * (the convention is derived from the DevPanel frontend SSO implementation).
  */
 
 export interface CognitoTokens {
@@ -142,10 +145,10 @@ export function generatePkce(): { verifier: string; challenge: string } {
 
 /**
  * Encode the post-login return URL as the OAuth `state` parameter.
- * DevPanel SSO convention (docs/cognito-sso-reference.md §3.1): the state is
- * the standard-base64 of the absolute return URL on our own host, never the
- * raw URL in the query string. The server still verifies `state === pending.state`
- * on the callback, so the equality check doubles as the CSRF guard.
+ * DevPanel SSO convention: the state is the standard-base64 of the absolute
+ * return URL on our own host, never the raw URL in the query string. The
+ * server still verifies `state === pending.state` on the callback, so the
+ * equality check doubles as the CSRF guard.
  */
 export function buildState(returnUrl: string): string {
   return Buffer.from(returnUrl, 'utf8').toString('base64');
@@ -154,7 +157,7 @@ export function buildState(returnUrl: string): string {
 /**
  * Decode the return URL from the `state` callback param.
  * Form-URL decoding turns `+` into a space; restore it before base64-decoding
- * (docs/cognito-sso-reference.md §3.8).
+ * (DevPanel SSO convention).
  */
 export function decodeState(state: string): string {
   return Buffer.from(state.replace(/ /g, '+'), 'base64').toString('utf8');
