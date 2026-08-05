@@ -61,8 +61,9 @@ function hostGuard(): RequestHandler {
 /**
  * Print which env var is guarding /mcp's static bearer auth (and a
  * non-secret fingerprint of it) so a token mismatch is diagnosable from the
- * startup log alone instead of reading source. Mirrors config.mcpBearerToken's
- * own fallback: DP_MCP_BEARER_TOKEN wins, else DP_ACCESS_TOKEN, else none.
+ * startup log alone instead of reading source. Reads config.mcpBearerTokenSource,
+ * the single computed source of truth for the DP_MCP_BEARER_TOKEN / DP_ACCESS_TOKEN
+ * fallback rule.
  */
 function logStaticBearerSource(): void {
   if (config.authMode === 'sso') {
@@ -74,12 +75,15 @@ function logStaticBearerSource(): void {
     return;
   }
   const fingerprint = (token: string) => `…${token.slice(-6)}`;
-  if (process.env.DP_MCP_BEARER_TOKEN) {
-    console.error(`[http] /mcp static bearer: DP_MCP_BEARER_TOKEN (${fingerprint(process.env.DP_MCP_BEARER_TOKEN)})`);
-  } else if (config.accessToken) {
-    console.error(`[http] /mcp static bearer: DP_ACCESS_TOKEN fallback (${fingerprint(config.accessToken)}) — set DP_MCP_BEARER_TOKEN to use a separate token`);
-  } else {
-    console.error('[http] /mcp static bearer: none (DP_MCP_BEARER_TOKEN/DP_ACCESS_TOKEN both empty) — only OAuth-issued tokens accepted');
+  switch (config.mcpBearerTokenSource) {
+    case 'DP_MCP_BEARER_TOKEN':
+      console.error(`[http] /mcp static bearer: DP_MCP_BEARER_TOKEN (${fingerprint(config.mcpBearerToken)})`);
+      break;
+    case 'DP_ACCESS_TOKEN':
+      console.error(`[http] /mcp static bearer: DP_ACCESS_TOKEN fallback (${fingerprint(config.mcpBearerToken)}) — set DP_MCP_BEARER_TOKEN to use a separate token`);
+      break;
+    default:
+      console.error('[http] /mcp static bearer: none (DP_MCP_BEARER_TOKEN/DP_ACCESS_TOKEN both empty) — only OAuth-issued tokens accepted');
   }
 }
 

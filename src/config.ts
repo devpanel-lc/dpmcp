@@ -47,6 +47,13 @@ export const config = {
   mcpBearerToken: env('DP_AUTH_MODE', 'off') === 'off'
     ? env('DP_MCP_BEARER_TOKEN', '') || (process.env.DP_ACCESS_TOKEN ?? '')
     : '',
+  /**
+   * Which env var config.mcpBearerToken's value came from (startup diagnostic
+   * log only). 'none' when authMode isn't 'off', or both vars are empty.
+   */
+  mcpBearerTokenSource: (env('DP_AUTH_MODE', 'off') === 'off'
+    ? (env('DP_MCP_BEARER_TOKEN', '') ? 'DP_MCP_BEARER_TOKEN' : (process.env.DP_ACCESS_TOKEN ? 'DP_ACCESS_TOKEN' : 'none'))
+    : 'none') as 'DP_MCP_BEARER_TOKEN' | 'DP_ACCESS_TOKEN' | 'none',
   defaultWorkspaceId: env('DP_DEFAULT_WORKSPACE_ID', 'mock-workspace'),
   enableRealCreate: env('DP_ENABLE_REAL_CREATE', 'false') === 'true',
   createProfile: env('DP_CREATE_PROFILE', 'drupal11-demo'),

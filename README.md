@@ -141,27 +141,25 @@ npm test
 
 The spec documents request bodies only -- it has no response schemas for `Workspace`, `Application`, `Project`, `Backup`, etc., so response shapes in `src/domain/types.ts` remain hand-curated and defensively normalized at runtime; see the comment at the top of that file.
 
-## HTTP transport mode (per-user Bearer tokens)
+## HTTP transport mode
 
-Set `DP_TRANSPORT=http` to run the MCP server over Streamable HTTP instead of stdio. Each request must carry an `Authorization: Bearer <token>` header. The token serves dual purpose:
-
-1. **Authentication** -- the token is forwarded to the DevPanel API as the `accessToken` for each request
-2. **Plan ownership** -- the SHA-256 hash of the token becomes the `ownerId` on every plan created by that caller
+`DP_TRANSPORT` (`stdio` default, or `http`) and `DP_AUTH_MODE` (`off` default, `sso`, or `token`) are independent settings. Transport picks stdio vs. public HTTP; auth mode picks how `/mcp` authenticates callers and how a DevPanel credential is obtained. `DP_MODE=mock` still works over `DP_TRANSPORT=http` -- transport doesn't force real mode.
 
 ```env
 DP_TRANSPORT=http
-DP_HTTP_HOST=127.0.0.1
-DP_HTTP_PORT=3100
-DP_HTTP_TLS_ENABLED=false  # set true + provide cert/key for production
-DP_HTTP_CERT_PATH=
-DP_HTTP_KEY_PATH=
+DP_PUBLIC_BASE_URL=https://your-server.example.com   # required in http mode
+DP_ALLOWED_HOSTS=                                     # optional Host-header allowlist; derived from DP_PUBLIC_BASE_URL by default
 ```
 
-The HTTP server binds to the configured host/port and accepts JSON-RPC requests using the MCP Streamable HTTP protocol. Plans created by one user cannot be approved or executed by a different token (owner identity is checked at execution time).
+There is no in-process TLS support -- run behind a TLS-terminating reverse proxy (Railway, nginx, Cloudflare Tunnel, etc.).
 
-**Security warning:** Without TLS (`DP_HTTP_TLS_ENABLED=false`), Bearer tokens are transmitted in cleartext. For production, either enable TLS with `DP_HTTP_TLS_ENABLED=true` + `DP_HTTP_CERT_PATH`/`DP_HTTP_KEY_PATH`, or run behind a TLS-terminating reverse proxy (nginx, Cloudflare Tunnel, etc.). When binding to `127.0.0.1`, traffic is local-only and does not cross the network.
+`DP_AUTH_MODE` controls `/mcp`'s auth behavior, independent of transport (see `.env.example` for the full annotated list of vars per mode):
 
-When `DP_TRANSPORT=http`, the `DP_MODE` setting is ignored (real mode is implicit since mock mode only applies to stdio local development).
+- **`off`** (default) -- a single shared `DP_ACCESS_TOKEN` is used for every caller. `/mcp` itself is gated by a static bearer: `DP_MCP_BEARER_TOKEN`, falling back to `DP_ACCESS_TOKEN` if unset. Fine for solo local dev; wrong for a shared deployment, since every caller acts as the same DevPanel identity.
+- **`sso`** -- the server logs into Cognito itself (`/login`, `/callback` in http mode; a loopback listener in stdio mode) and keeps the DevPanel token server-side only. `/mcp` is protected by this server's own MCP OAuth implementation (`src/auth/mcp-oauth.ts`); those tokens are scoped to the MCP tools only and are never sent to DevPanel.
+- **`token`** (bring-your-own-token) -- requires `DP_TRANSPORT=http`. There is no server-side secret: each MCP session's own `/mcp` bearer is forwarded 1:1 to DevPanel for that session, and DevPanel itself rejects invalid tokens.
+
+**Plan ownership** comes from `currentOwnerId()` (`src/clients/token-scoped-client.ts` -> `src/auth/session.ts`'s `getOwnerId()`) -- the Cognito `sub` claim if a server-side SSO session exists, otherwise the literal string `'local'`. This is a single process-wide value, not derived per bearer token: in `off` and `token` modes (no SSO session), every caller on the same server process shares ownerId `'local'`, so plans created by different bearers are not isolated from each other there. Real per-user plan-ownership isolation requires `DP_AUTH_MODE=sso`.
 
 ## Important implementation constraints
 
