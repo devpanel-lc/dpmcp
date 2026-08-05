@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   getOAuthProtectedResourceMetadataUrl,
@@ -9,6 +8,8 @@ import {
 } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { config } from './config.js';
+import type { DevPanelClientFactory } from './clients/devpanel.js';
+import { buildServer } from './server.js';
 import type { PlanStore } from './stores/plan-store.js';
 import { McpOAuthProvider } from './auth/mcp-oauth.js';
 import { handleCallbackRequest, handleLoginRequest } from './auth/login-server.js';
@@ -57,6 +58,31 @@ function hostGuard(): RequestHandler {
   };
 }
 
+/**
+ * Print which env var is guarding /mcp's static bearer auth (and a
+ * non-secret fingerprint of it) so a token mismatch is diagnosable from the
+ * startup log alone instead of reading source. Mirrors config.mcpBearerToken's
+ * own fallback: DP_MCP_BEARER_TOKEN wins, else DP_ACCESS_TOKEN, else none.
+ */
+function logStaticBearerSource(): void {
+  if (config.authMode === 'sso') {
+    console.error('[http] /mcp static bearer: disabled (DP_AUTH_MODE=sso) — only OAuth-issued tokens accepted');
+    return;
+  }
+  if (config.authMode === 'token') {
+    console.error('[http] /mcp static bearer: disabled (DP_AUTH_MODE=token) — any bearer is accepted and forwarded to DevPanel as-is; DevPanel rejects invalid ones');
+    return;
+  }
+  const fingerprint = (token: string) => `…${token.slice(-6)}`;
+  if (process.env.DP_MCP_BEARER_TOKEN) {
+    console.error(`[http] /mcp static bearer: DP_MCP_BEARER_TOKEN (${fingerprint(process.env.DP_MCP_BEARER_TOKEN)})`);
+  } else if (config.accessToken) {
+    console.error(`[http] /mcp static bearer: DP_ACCESS_TOKEN fallback (${fingerprint(config.accessToken)}) — set DP_MCP_BEARER_TOKEN to use a separate token`);
+  } else {
+    console.error('[http] /mcp static bearer: none (DP_MCP_BEARER_TOKEN/DP_ACCESS_TOKEN both empty) — only OAuth-issued tokens accepted');
+  }
+}
+
 function isInitializeRequest(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as { method?: unknown }).method === 'initialize';
 }
@@ -66,7 +92,7 @@ function isInitializeRequest(body: unknown): boolean {
  * the first request must be `initialize` (creates the session + transport),
  * subsequent requests carry the mcp-session-id header.
  */
-function handleMcpRequest(mcpServer: McpServer): RequestHandler {
+function handleMcpRequest(dpFactory: DevPanelClientFactory, store: PlanStore): RequestHandler {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
   return async (req: Request, res: Response) => {
     const headerValue = req.headers['mcp-session-id'];
@@ -74,40 +100,55 @@ function handleMcpRequest(mcpServer: McpServer): RequestHandler {
     const initialize = isInitializeRequest(req.body);
     let transport = sessionId ? sessions.get(sessionId) : undefined;
 
-    if (!transport) {
-      if (!initialize) {
-        res.status(sessionId ? 404 : 400).json({
+    try {
+      if (!transport) {
+        if (!initialize) {
+          res.status(sessionId ? 404 : 400).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: sessionId ? 'Unknown MCP session' : 'Missing MCP session — call initialize first' },
+            id: null,
+          });
+          return;
+        }
+        let initializedSessionId: string | undefined;
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            initializedSessionId = id;
+            sessions.set(id, transport!);
+          },
+        });
+        transport.onclose = () => {
+          if (initializedSessionId) sessions.delete(initializedSessionId);
+        };
+        // req.auth is set by requireBearerAuth ahead of this handler; in
+        // 'token' mode its .token IS the caller's own DevPanel credential.
+        const srv = buildServer(dpFactory(req.auth?.token), store);
+        await srv.connect(transport);
+      }
+
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('[mcp] error handling request:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
           jsonrpc: '2.0',
-          error: { code: -32000, message: sessionId ? 'Unknown MCP session' : 'Missing MCP session — call initialize first' },
+          error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
           id: null,
         });
-        return;
       }
-      let initializedSessionId: string | undefined;
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => {
-          initializedSessionId = id;
-          sessions.set(id, transport!);
-        },
-      });
-      transport.onclose = () => {
-        if (initializedSessionId) sessions.delete(initializedSessionId);
-      };
-      await mcpServer.connect(transport);
     }
-
-    await transport.handleRequest(req, res, req.body);
   };
 }
 
-export async function startHttpServer(mcpServer: McpServer, store: PlanStore): Promise<Server> {
+export async function startHttpServer(dpFactory: DevPanelClientFactory, store: PlanStore): Promise<Server> {
   if (!config.publicBaseUrl) {
     throw new Error('DP_PUBLIC_BASE_URL is required in http transport mode (e.g. https://dpmcp.up.railway.app)');
   }
   const baseUrl = new URL(config.publicBaseUrl);
   const mcpUrl = new URL(`${config.publicBaseUrl}/mcp`);
-  const provider = new McpOAuthProvider();
+  const provider = new McpOAuthProvider(config.mcpBearerToken || undefined);
+  logStaticBearerSource();
   const app = express();
   app.disable('x-powered-by');
 
@@ -151,9 +192,9 @@ export async function startHttpServer(mcpServer: McpServer, store: PlanStore): P
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
     }),
   );
-  app.post('/mcp', express.json({ limit: '4mb' }), handleMcpRequest(mcpServer));
-  app.get('/mcp', handleMcpRequest(mcpServer));
-  app.delete('/mcp', handleMcpRequest(mcpServer));
+  app.post('/mcp', express.json({ limit: '4mb' }), handleMcpRequest(dpFactory, store));
+  app.get('/mcp', handleMcpRequest(dpFactory, store));
+  app.delete('/mcp', handleMcpRequest(dpFactory, store));
 
   // External review UI (last: everything else 404s through its handler).
   app.use((req, res) => {

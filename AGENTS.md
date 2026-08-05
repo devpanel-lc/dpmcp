@@ -15,8 +15,9 @@ MCP server (TypeScript, stdio transport) for planning, reviewing, approving, and
 | Build | `npm run build` |
 | Run all tests | `npm test` |
 | Run one test file | `npx vitest run tests/plan-flow.test.ts` |
+| Regenerate API types from `devpanel-openapi.json` | `npm run generate:api` |
 
-**Order matters:** `npm run typecheck` → `npm test` before any commit. There is no linter configured.
+**Order matters:** `npm run typecheck` → `npm test` before any commit. There is no linter configured. If `devpanel-openapi.json` changed, run `npm run generate:api` first -- `tests/api-types.test.ts` fails if the committed generated types are stale.
 
 ## Mode switch
 
@@ -55,6 +56,9 @@ src/approval/providers/           → form-elicitation.ts, url-elicitation.ts, e
 src/approval/review-server.ts     → HTTP server for external URL fallback review UI
 src/domain/types.ts               → ChangePlan, ApprovalRecord, PlanStatus, ElicitationResult
 src/utils/                        → hash.ts (SHA-256 plan fingerprint), fingerprint.ts (app state fingerprint)
+src/generated/devpanel-api.d.ts   → generated from devpanel-openapi.json via `npm run generate:api`, do not hand-edit
+src/clients/api-paths.ts          → apiPath() types RealDevPanelClient's endpoint paths against generated paths
+src/tools/read-only-tool.ts       → defineReadOnlyTool() for tools that are structurally read-only only
 ```
 
 ### Key design constraints
@@ -102,7 +106,7 @@ Server returns result
 - `tsc` config: `"module": "NodeNext"` with ESM (`"type": "module"` in package.json). Source uses `.js` extensions in imports — keep them.
 - Zod 4.x (not 3.x) — schemas differ slightly.
 - MCP SDK is pinned to `@modelcontextprotocol/sdk@1.30.0` (stable v1 line, not v2 beta).
-- No lockfile checked in — run `npm install` before typecheck/test if `node_modules/` is missing.
+- `package-lock.json` is checked in — run `npm install` before typecheck/test if `node_modules/` is missing.
 - Recommended Node version: 24 (see `.nvmrc`).
 - `config/create-profiles/drupal11-demo.json` contains a template payload with `{{placeholders}}` — not valid JSON for direct use; it is documentation of the expected shape.
 - MCP SDK has no "MCP Apps" or tool-hiding capability. Form Elicitation is the closest inline approval mechanism.

@@ -19,6 +19,14 @@ export interface CreateWorkspaceRequest {
   tags?: string[];
 }
 
+/**
+ * Builds a DevPanelClient for one MCP session. In 'token' auth mode this is
+ * called with the caller's own /mcp bearer token so each session forwards
+ * its own DevPanel credential; other modes ignore the argument and return a
+ * shared client.
+ */
+export type DevPanelClientFactory = (bearerToken?: string) => DevPanelClient;
+
 export interface DevPanelClient {
   listWorkspaces(): Promise<WorkspaceRef[]>;
   listEnvironments(search?: string): Promise<EnvironmentRef[]>;

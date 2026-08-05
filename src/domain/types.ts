@@ -1,3 +1,8 @@
+// These Ref types are hand-curated, not generated. devpanel-openapi.json defines request
+// DTOs only (components/schemas/*DTO) -- it has no response schemas for Workspace,
+// Application, Project, Backup, etc. RealDevPanelClient's normalize* functions must stay
+// defensive at runtime regardless of what any generated types say. See src/generated/.
+
 export type PlanStatus =
   | 'DRAFT'
   | 'READY_FOR_REVIEW'

@@ -10,6 +10,7 @@ import type { ElicitFn } from '../approval/providers/form-elicitation.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
 import { currentOwnerId } from '../clients/token-scoped-client.js';
+import { defineReadOnlyTool } from './read-only-tool.js';
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
 
@@ -63,70 +64,61 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   // ---- Discovery tools ----
 
-  server.registerTool('devpanel_list_workspaces', {
-    description: 'Read-only. List all DevPanel workspaces accessible to the authenticated user.',
-    inputSchema: {},
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => text(await dp.listWorkspaces()));
+  defineReadOnlyTool(server, 'devpanel_list_workspaces',
+    'Read-only. List all DevPanel workspaces accessible to the authenticated user.',
+    {},
+    async () => text(await dp.listWorkspaces()));
 
-  server.registerTool('devpanel_list_environments', {
-    description: 'Read-only. List DevPanel environments (Kubernetes clusters), optionally filtered by search string. Environment IDs are required to plan workspace creation. If none exist, the environment must be created in the DevPanel UI first -- provisioning is not yet supported via MCP.',
-    inputSchema: { search: z.string().optional() },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ search }) => {
-    const environments = await dp.listEnvironments(search);
-    if (environments.length === 0) {
-      return text({
-        status: 'no_environments',
-        message: 'No environments found. Environment (cluster) creation is not yet supported via MCP -- create an environment in the DevPanel UI first, then list environments again to get its ID.',
-      });
-    }
-    return text(environments);
-  });
+  defineReadOnlyTool(server, 'devpanel_list_environments',
+    'Read-only. List DevPanel environments (Kubernetes clusters), optionally filtered by search string. Environment IDs are required to plan workspace creation. If none exist, the environment must be created in the DevPanel UI first -- provisioning is not yet supported via MCP.',
+    { search: z.string().optional() },
+    async ({ search }) => {
+      const environments = await dp.listEnvironments(search);
+      if (environments.length === 0) {
+        return text({
+          status: 'no_environments',
+          message: 'No environments found. Environment (cluster) creation is not yet supported via MCP -- create an environment in the DevPanel UI first, then list environments again to get its ID.',
+        });
+      }
+      return text(environments);
+    });
 
-  server.registerTool('devpanel_list_projects', {
-    description: 'Read-only. List all DevPanel projects in a workspace.',
-    inputSchema: { workspaceId: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ workspaceId }) => text(await dp.listProjects(workspaceId)));
+  defineReadOnlyTool(server, 'devpanel_list_projects',
+    'Read-only. List all DevPanel projects in a workspace.',
+    { workspaceId: z.string().min(1) },
+    async ({ workspaceId }) => text(await dp.listProjects(workspaceId)));
 
-  server.registerTool('devpanel_list_project_types', {
-    description: 'Read-only. List available DevPanel project types (e.g. lamp, drupal11_v2, wordpress_v2).',
-    inputSchema: {},
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => text(await dp.listProjectTypes()));
+  defineReadOnlyTool(server, 'devpanel_list_project_types',
+    'Read-only. List available DevPanel project types (e.g. lamp, drupal11_v2, wordpress_v2).',
+    {},
+    async () => text(await dp.listProjectTypes()));
 
-  server.registerTool('devpanel_list_applications', {
-    description: 'Read-only. List DevPanel applications in a workspace, optionally filtered by search string.',
-    inputSchema: { ...wsOpt, search: z.string().optional() },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ workspaceId, search }) => text(await dp.listApplications(workspaceId, search)));
+  defineReadOnlyTool(server, 'devpanel_list_applications',
+    'Read-only. List DevPanel applications in a workspace, optionally filtered by search string.',
+    { ...wsOpt, search: z.string().optional() },
+    async ({ workspaceId, search }) => text(await dp.listApplications(workspaceId, search)));
 
-  server.registerTool('devpanel_list_project_applications', {
-    description: 'Read-only. List applications in a specific project within a workspace.',
-    inputSchema: { workspaceId: z.string().min(1), projectId: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ workspaceId, projectId }) => text(await dp.listProjectApplications(workspaceId, projectId)));
+  defineReadOnlyTool(server, 'devpanel_list_project_applications',
+    'Read-only. List applications in a specific project within a workspace.',
+    { workspaceId: z.string().min(1), projectId: z.string().min(1) },
+    async ({ workspaceId, projectId }) => text(await dp.listProjectApplications(workspaceId, projectId)));
 
   // ---- Git provider tools ----
 
-  server.registerTool('devpanel_list_git_owners', {
-    description: 'Read-only. List connected Git providers and organizations (e.g. GitHub orgs/users). Requires OAuth or personal token to be configured first.',
-    inputSchema: { provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ provider }) => text(await dp.listGitOwners(provider)));
+  defineReadOnlyTool(server, 'devpanel_list_git_owners',
+    'Read-only. List connected Git providers and organizations (e.g. GitHub orgs/users). Requires OAuth or personal token to be configured first.',
+    { provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
+    async ({ provider }) => text(await dp.listGitOwners(provider)));
 
-  server.registerTool('devpanel_list_repositories', {
-    description: 'Read-only. Search accessible Git repositories from connected providers.',
-    inputSchema: { owner: z.string().optional(), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ owner, provider }) => text(await dp.listRepositories(owner, provider)));
+  defineReadOnlyTool(server, 'devpanel_list_repositories',
+    'Read-only. Search accessible Git repositories from connected providers.',
+    { owner: z.string().optional(), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET']).default('GITHUB') },
+    async ({ owner, provider }) => text(await dp.listRepositories(owner, provider)));
 
-  server.registerTool('devpanel_list_repository_branches', {
-    description: 'Read-only. List branches for a specific Git repository. Returns only the first page (max 50 branches, no pagination). repoId is a DevPanel-internal id and is ignored by the provider. Requires a personal token with repo scope for private repositories.',
-    inputSchema: { owner: z.string().min(1), repoName: z.string().min(1), repoId: z.string().min(1), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET', 'DRUPALCODE']).default('GITHUB') },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ owner, repoName, repoId, provider }) => text(await dp.listRepositoryBranches(owner, repoName, repoId, provider)));
+  defineReadOnlyTool(server, 'devpanel_list_repository_branches',
+    'Read-only. List branches for a specific Git repository. Returns only the first page (max 50 branches, no pagination). repoId is a DevPanel-internal id and is ignored by the provider. Requires a personal token with repo scope for private repositories.',
+    { owner: z.string().min(1), repoName: z.string().min(1), repoId: z.string().min(1), provider: z.enum(['GITHUB', 'GITLAB', 'BITBUCKET', 'DRUPALCODE']).default('GITHUB') },
+    async ({ owner, repoName, repoId, provider }) => text(await dp.listRepositoryBranches(owner, repoName, repoId, provider)));
 
   server.registerTool('devpanel_set_git_token', {
     description: 'MUTATION. Set or update a personal Git access token for a provider (e.g. github, gitlab, bitbucket). Required for private repositories.',
@@ -142,29 +134,25 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   // ---- Application detail tools ----
 
-  server.registerTool('devpanel_get_application', {
-    description: 'Read-only. Resolve an application by ID or unique search string and return normalized details.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application, workspaceId }) => text(await resolver.resolve(application, workspaceId)));
+  defineReadOnlyTool(server, 'devpanel_get_application',
+    'Read-only. Resolve an application by ID or unique search string and return normalized details.',
+    { ...wsOpt, application: z.string().min(1) },
+    async ({ application, workspaceId }) => text(await resolver.resolve(application, workspaceId)));
 
-  server.registerTool('devpanel_get_application_activities', {
-    description: 'Read-only. Get activity history for an application.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationActivities(app)); });
+  defineReadOnlyTool(server, 'devpanel_get_application_activities',
+    'Read-only. Get activity history for an application.',
+    { ...wsOpt, application: z.string().min(1) },
+    async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationActivities(app)); });
 
-  server.registerTool('devpanel_get_activity_logs', {
-    description: 'Read-only. Get HTTP access logs for an application container.',
-    inputSchema: { ...wsOpt, application: z.string().min(1), containerName: z.string().default('php'), pageSize: z.number().default(100) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application, workspaceId, containerName, pageSize }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationLogs(app, containerName, pageSize)); });
+  defineReadOnlyTool(server, 'devpanel_get_activity_logs',
+    'Read-only. Get HTTP access logs for an application container.',
+    { ...wsOpt, application: z.string().min(1), containerName: z.string().default('php'), pageSize: z.number().default(100) },
+    async ({ application, workspaceId, containerName, pageSize }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getApplicationLogs(app, containerName, pageSize)); });
 
-  server.registerTool('devpanel_list_backups', {
-    description: 'Read-only. List backups for an application.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.listBackups(app)); });
+  defineReadOnlyTool(server, 'devpanel_list_backups',
+    'Read-only. List backups for an application.',
+    { ...wsOpt, application: z.string().min(1) },
+    async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.listBackups(app)); });
 
   // ---- Plan creation tools ----
 
@@ -256,11 +244,10 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   // ---- Plan inspection ----
 
-  server.registerTool('devpanel_get_plan', {
-    description: 'Read-only. Get an immutable change plan, its approval status, and any execution result.',
-    inputSchema: { planId: z.string().min(1) },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ planId }) => { const plan = await store.get(planId); if (!plan) return errorText('PLAN_NOT_FOUND', `Plan not found: ${planId}`); return text(plan); });
+  defineReadOnlyTool(server, 'devpanel_get_plan',
+    'Read-only. Get an immutable change plan, its approval status, and any execution result.',
+    { planId: z.string().min(1) },
+    async ({ planId }) => { const plan = await store.get(planId); if (!plan) return errorText('PLAN_NOT_FOUND', `Plan not found: ${planId}`); return text(plan); });
 
   // ---- Approval + Execution ----
 

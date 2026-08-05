@@ -24,7 +24,7 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
         `SSO login required — no DevPanel session. Open ${getLoginUrl() || 'the Cognito hosted-UI login URL'} in your browser and complete sign-in, then retry.`,
       );
     }
-    return new RealDevPanelClient(token);
+    return new RealDevPanelClient(token, true); // SSO session token — supports refresh on 401
   }
 
   async listWorkspaces(): Promise<WorkspaceRef[]> {
