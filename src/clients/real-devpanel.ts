@@ -51,7 +51,17 @@ function extractItems(raw: unknown, ...keys: string[]): unknown[] {
 }
 
 export class RealDevPanelClient implements DevPanelClient {
-  constructor(private readonly accessToken: string) { }
+  /**
+   * @param accessToken The token to send to DevPanel.
+   * @param ssoMode     true = SSO session token (supports refresh on 401).
+   *                    false = static personal access token (no refresh).
+   * @param sourceHint  Where this token came from, for the 401 error message.
+   */
+  constructor(
+    private readonly accessToken: string,
+    private readonly ssoMode: boolean = false,
+    private readonly sourceHint: string = 'DP_ACCESS_TOKEN in .env',
+  ) { }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     return this.requestWithToken(path, init, this.accessToken, false);
@@ -76,6 +86,10 @@ export class RealDevPanelClient implements DevPanelClient {
     let body: unknown = text;
     try { body = text ? JSON.parse(text) : undefined; } catch { /* keep text */ }
     if (response.status === 401) {
+      if (!this.ssoMode) {
+        // Static token mode: no session to refresh — report the bad token.
+        throw new Error(`DevPanel 401 ${path}: access token rejected — check ${this.sourceHint}`);
+      }
       if (retried) {
         clearSession();
         throw new Error(`DevPanel 401 ${path}: access token rejected after refresh — SSO re-login required (open ${getLoginUrl() || 'the Cognito login URL'})`);

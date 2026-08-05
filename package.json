@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "inspector": "npx @modelcontextprotocol/inspector npx tsx src/index.ts",
-    "inspector:http": "export $(grep -v '^#' .env.local | xargs) 2>/dev/null; npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:3100 --header \"Authorization: Bearer ${DP_ACCESS_TOKEN:-dev-token}\""
+    "inspector:http": "export $(grep -v '^#' .env | xargs) 2>/dev/null; npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:${PORT:-3100} --header \"Authorization: Bearer ${DP_MCP_BEARER_TOKEN:-$DP_ACCESS_TOKEN}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

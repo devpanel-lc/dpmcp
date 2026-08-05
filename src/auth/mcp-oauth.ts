@@ -70,6 +70,13 @@ function newToken(): string {
 }
 
 export class McpOAuthProvider implements OAuthServerProvider {
+  /** Optional shared bearer token for off mode (no OAuth dance). Empty in sso mode. */
+  private readonly staticToken: string;
+
+  constructor(staticToken?: string) {
+    this.staticToken = staticToken ?? '';
+  }
+
   /** Read + dynamic registration (RFC 7591) of MCP clients (opencode etc.). */
   readonly clientsStore: OAuthRegisteredClientsStore = {
     getClient(clientId: string): OAuthClientInformationFull | undefined {
@@ -82,13 +89,14 @@ export class McpOAuthProvider implements OAuthServerProvider {
   };
 
   /**
-   * Entry point of the MCP OAuth flow. A human must be signed in to DevPanel
-   * (server-side Cognito session) before consenting: without a session we send
-   * the browser to /login?next=… so the consent step happens after sign-in.
-   * With a session we render the consent page directly.
+   * Entry point of the MCP OAuth flow. In sso mode a human must be signed in
+   * to DevPanel (server-side Cognito session) before consenting: without a
+   * session we send the browser to /login?next=… so the consent step happens
+   * after sign-in. In off mode (static bearer token) there is no Cognito
+   * session to gate on — render the consent page directly.
    */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
-    if (!getSession()) {
+    if (config.authMode === 'sso' && !getSession()) {
       const next = buildAuthorizeNextUrl(client, params);
       res.redirect(302, `/login?next=${encodeURIComponent(next)}`);
       return;
@@ -199,6 +207,25 @@ export class McpOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    if (this.staticToken && token === this.staticToken) {
+      return {
+        token,
+        clientId: 'static-token',
+        scopes: [],
+        expiresAt: Math.floor((Date.now() + ACCESS_TOKEN_TTL_MS) / 1000),
+      };
+    }
+    if (config.authMode === 'token') {
+      // Bring-your-own-token: this server has no shared secret to compare
+      // against. The bearer is forwarded to DevPanel as-is per session;
+      // DevPanel itself rejects invalid tokens on the first real API call.
+      return {
+        token,
+        clientId: 'byot',
+        scopes: [],
+        expiresAt: Math.floor((Date.now() + ACCESS_TOKEN_TTL_MS) / 1000),
+      };
+    }
     const grant = grants.get(token);
     if (!grant) throw new InvalidTokenError('Invalid access token');
     if (grant.expiresAt < Date.now()) {

@@ -29,13 +29,24 @@ export const config = {
   mode: env('DP_MODE', 'mock') as 'mock' | 'real',
   transport,
   /**
-   * off = use DP_ACCESS_TOKEN directly (legacy behavior).
-   * sso = server-side Cognito login; the MCP server owns the token and the
-   *       MCP client never sees it. stdio transport only.
+   * off   = single shared DP_ACCESS_TOKEN for every caller (legacy behavior).
+   * sso   = server-side Cognito login; the MCP server owns the token and the
+   *         MCP client never sees it. stdio transport only.
+   * token = bring-your-own-token: each MCP client sends its own DevPanel
+   *         access token as its /mcp bearer, forwarded 1:1 to DevPanel for
+   *         that session. No shared secret lives on the server. http only.
    */
-  authMode: env('DP_AUTH_MODE', 'off') as 'off' | 'sso',
+  authMode: env('DP_AUTH_MODE', 'off') as 'off' | 'sso' | 'token',
   apiBaseUrl: env('DP_API_BASE_URL', 'http://localhost.invalid'),
   accessToken: process.env.DP_ACCESS_TOKEN ?? '',
+  /**
+   * Static bearer token accepted by /mcp in off mode (no OAuth flow needed).
+   * DP_MCP_BEARER_TOKEN wins; falls back to DP_ACCESS_TOKEN. Empty in sso and
+   * token modes, which don't compare against a fixed server-side secret.
+   */
+  mcpBearerToken: env('DP_AUTH_MODE', 'off') === 'off'
+    ? env('DP_MCP_BEARER_TOKEN', '') || (process.env.DP_ACCESS_TOKEN ?? '')
+    : '',
   defaultWorkspaceId: env('DP_DEFAULT_WORKSPACE_ID', 'mock-workspace'),
   enableRealCreate: env('DP_ENABLE_REAL_CREATE', 'false') === 'true',
   createProfile: env('DP_CREATE_PROFILE', 'drupal11-demo'),
