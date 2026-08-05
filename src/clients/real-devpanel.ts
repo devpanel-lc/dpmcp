@@ -1,5 +1,6 @@
 import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
+import { apiPath } from './api-paths.js';
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
 import { getAccessToken, getLoginUrl, refreshNow, clearSession } from '../auth/session.js';
@@ -145,7 +146,7 @@ export class RealDevPanelClient implements DevPanelClient {
   async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
     if (search) qs.set('search', search);
-    const raw = await this.request(`/api/v2/environments?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/environments')}?${qs}`);
     const items = extractItems(raw, 'environments', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) return raw.map(item => this.normalizeEnvironment(item));
     return items.map(item => this.normalizeEnvironment(item));
@@ -155,7 +156,7 @@ export class RealDevPanelClient implements DevPanelClient {
     const payload: Record<string, unknown> = { name: input.name, environmentId: input.environmentId };
     if (input.description) payload.description = input.description;
     if (input.tags && input.tags.length > 0) payload.tags = input.tags;
-    const raw = await this.request('/api/v2/workspaces', { method: 'POST', body: JSON.stringify(payload) });
+    const raw = await this.request(apiPath('/api/v2/workspaces'), { method: 'POST', body: JSON.stringify(payload) });
     const normalized = this.normalizeWorkspace(raw);
     if (!normalized.id) {
       const r = asRecord(raw);
@@ -179,19 +180,19 @@ export class RealDevPanelClient implements DevPanelClient {
   }
 
   async listWorkspaces(): Promise<WorkspaceRef[]> {
-    const raw = await this.request('/api/v2/workspaces?pageIndex=1&pageSize=100');
+    const raw = await this.request(`${apiPath('/api/v2/workspaces')}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'workspaces', 'data', 'items');
     return items.map(item => this.normalizeWorkspace(item));
   }
 
   async listProjects(workspaceId: string): Promise<ProjectRef[]> {
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects?pageIndex=1&pageSize=100`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/projects', { workspaceId })}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'projects', 'data', 'items');
     return items.map(item => this.normalizeProject(item));
   }
 
   async listProjectTypes(): Promise<ProjectTypeRef[]> {
-    const raw = await this.request('/api/v2/projects/project-types');
+    const raw = await this.request(apiPath('/api/v2/projects/project-types'));
     const items = extractItems(raw, 'projectTypes', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) return raw.map(k => ({ key: String(k), label: String(k) }));
     return items.map(item => {
@@ -203,35 +204,37 @@ export class RealDevPanelClient implements DevPanelClient {
   async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
     if (search) qs.set('search', search);
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/applications?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/applications', { workspaceId })}?${qs}`);
     const items = extractItems(raw, 'applications', 'data', 'items');
     return items.map(item => this.normalizeApplication(item));
   }
 
   async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects/${projectId}/applications?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId, projectId })}?${qs}`);
     const items = extractItems(raw, 'applications', 'data', 'items');
     return items.map(item => this.normalizeApplication(item));
   }
 
   async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}`);
+    const raw = await this.request(apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }));
     return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
   }
 
   async getApplicationActivities(app: ApplicationRef): Promise<unknown> {
-    return this.request(`/api/v2/activities?workspaceId=${encodeURIComponent(app.workspaceId)}&projectId=${encodeURIComponent(app.projectId)}&applicationId=${encodeURIComponent(app.id)}&pageIndex=1&pageSize=50`);
+    return this.request(`${apiPath('/api/v2/activities')}?workspaceId=${encodeURIComponent(app.workspaceId)}&projectId=${encodeURIComponent(app.projectId)}&applicationId=${encodeURIComponent(app.id)}&pageIndex=1&pageSize=50`);
   }
 
   async getApplicationLogs(app: ApplicationRef, containerName = 'php', pageSize = 100): Promise<unknown> {
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/http-logs/${encodeURIComponent(containerName)}?pageSize=${pageSize}`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/http-logs/{containerName}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, containerName });
+    return this.request(`${path}?pageSize=${pageSize}`);
   }
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups?pageIndex=1&pageSize=100`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    const raw = await this.request(`${path}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'backups', 'data', 'items');
     return items.map(item => {
       const x = asRecord(item);
@@ -261,14 +264,15 @@ export class RealDevPanelClient implements DevPanelClient {
     if (typeof payload.repositoryId === 'string' && /^\d+$/.test(payload.repositoryId)) {
       payload.repositoryId = Number(payload.repositoryId);
     }
-    const raw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects`, { method: 'POST', body: JSON.stringify(payload) });
+    const raw = await this.request(apiPath('/api/v2/workspaces/{workspaceId}/projects', { workspaceId: input.workspaceId }), { method: 'POST', body: JSON.stringify(payload) });
 
     const r = asRecord(raw);
     const projectId = firstString(r, '_id', 'id', 'projectId') ?? firstString(asRecord(r.project), '_id', 'id');
     if (!projectId) throw new Error('Create Project succeeded but projectId could not be extracted. Update RealDevPanelClient using the captured UI response contract.');
 
+    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: input.workspaceId, projectId });
     for (let i = 0; i < 60; i++) {
-      const listRaw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects/${projectId}/applications?pageIndex=1&pageSize=20`);
+      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
       const items = extractItems(listRaw, 'applications', 'data', 'items');
       if (items.length > 0) return this.normalizeApplication(items[0], { projectId, workspaceId: input.workspaceId, originBranch: input.branch });
       await new Promise(r => setTimeout(r, 2000));
@@ -280,17 +284,18 @@ export class RealDevPanelClient implements DevPanelClient {
     this.requireHierarchy(app);
     const body = { ...ACTIVATE_DEFAULTS, ...actConfig };
     const raw = await this.request(
-      `/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/activate`,
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/activate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
       { method: 'PATCH', body: JSON.stringify(body) },
     );
     let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: app.workspaceId, projectId: app.projectId });
     // Activation is async: the endpoint returns immediately while a background task deploys to K8s.
     // Poll the list endpoint until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded).
     // On timeout, return the last observed status so slow deployments still surface as SUCCEEDED
     // plans for the agent to verify with devpanel_list_applications.
     for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'DEPLOY_APPLICATION_SUCCESS'; attempt++) {
       await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
-      const listRaw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications?pageIndex=1&pageSize=20`);
+      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
       const items = extractItems(listRaw, 'applications', 'data', 'items');
       const current = items.find(item => firstString(asRecord(item), '_id', 'id', 'applicationId') === app.id);
       if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
@@ -300,7 +305,7 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {
     const qs = new URLSearchParams({ gitProvider: provider.toUpperCase(), isUsePersonalToken: '1' });
-    const raw = await this.request(`/api/v2/users/git-owners?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/users/git-owners')}?${qs}`);
     const items = extractItems(raw, 'gitOwners', 'data', 'items');
     return items.map(item => {
       const r = asRecord(item);
@@ -317,7 +322,7 @@ export class RealDevPanelClient implements DevPanelClient {
     const qs = new URLSearchParams({ pageIndex: '1', isUsePersonalToken: '1' });
     if (owner) qs.set('owner', owner);
     qs.set('gitProvider', provider.toUpperCase());
-    const raw = await this.request(`/api/v2/users/repositories?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/users/repositories')}?${qs}`);
     const items = extractItems(raw, 'repositories', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {
       return raw.map(item => this.normalizeRepo(item));
@@ -340,9 +345,8 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async listRepositoryBranches(owner: string, repoName: string, repoId: string, provider = 'GITHUB'): Promise<GitBranchRef[]> {
     const encodedOwner = encodeURIComponent(owner);
-    const encodedName = encodeURIComponent(repoName);
-    const encodedId = encodeURIComponent(repoId);
-    const raw = await this.request(`/api/v2/users/repositories/${encodedName}/${encodedId}/branches?gitProvider=${provider.toUpperCase()}&owner=${encodedOwner}&isUsePersonalToken=1`);
+    const path = apiPath('/api/v2/users/repositories/{repoName}/{repoId}/branches', { repoName, repoId });
+    const raw = await this.request(`${path}?gitProvider=${provider.toUpperCase()}&owner=${encodedOwner}&isUsePersonalToken=1`);
     const items = extractItems(raw, 'branches', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {
       return raw.map(item => this.normalizeBranch(item));
@@ -360,14 +364,14 @@ export class RealDevPanelClient implements DevPanelClient {
   }
 
   async setGitToken(token: string, provider: string, username: string): Promise<void> {
-    await this.request('/api/v2/users/gitToken', {
+    await this.request(apiPath('/api/v2/users/gitToken'), {
       method: 'PATCH',
       body: JSON.stringify({ gitProvider: provider.toUpperCase(), username, tokenValue: token }),
     });
   }
 
   async removeGitToken(provider: string): Promise<void> {
-    await this.request('/api/v2/users/gitToken', {
+    await this.request(apiPath('/api/v2/users/gitToken'), {
       method: 'DELETE',
       body: JSON.stringify({ gitProvider: provider.toUpperCase() }),
     });
@@ -375,7 +379,8 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups`, {
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    const raw = await this.request(path, {
       method: 'POST', body: JSON.stringify({ type: 'MANUAL' })
     });
     const r = asRecord(raw);
@@ -384,12 +389,14 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown> {
     this.requireHierarchy(app);
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups/${encodeURIComponent(backupId)}/restore`, { method: 'PATCH' });
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups/{backupId}/restore', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, backupId });
+    return this.request(path, { method: 'PATCH' });
   }
 
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     this.requireHierarchy(app);
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}`, { method: 'DELETE' });
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    return this.request(path, { method: 'DELETE' });
   }
 
   private requireHierarchy(app: ApplicationRef): void {
