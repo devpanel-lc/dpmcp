@@ -26,7 +26,11 @@ export type PlanAction =
   | 'RESTORE_APPLICATION'
   | 'DELETE_APPLICATION'
   | 'DELETE_PROJECT'
-  | 'CREATE_WORKSPACE';
+  | 'CREATE_WORKSPACE'
+  | 'ENABLE_EDITOR'
+  | 'DISABLE_EDITOR'
+  | 'ENABLE_PMA'
+  | 'DISABLE_PMA';
 
 export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
 
@@ -124,6 +128,8 @@ export interface ApplicationRef {
   hostname?: string;
   status?: string;
   originBranch?: string;
+  isEnableEditor?: boolean;
+  isEnablePMA?: boolean;
   raw?: unknown;
 }
 

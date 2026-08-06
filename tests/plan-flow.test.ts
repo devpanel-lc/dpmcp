@@ -646,6 +646,126 @@ describe('delete project flow', () => {
   });
 });
 
+describe('editor/PMA toggle flow', () => {
+  it('blocks toggling code server on an application that is not deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.enableEditorPlan('app_demo_1')).rejects.toThrow('can only be toggled on a deployed application');
+  });
+
+  it('enables code server and executes it once the application is deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.enableEditorPlan('app_demo_1');
+    expect(plan.action).toBe('ENABLE_EDITOR');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.isEnableEditor).toBe(true);
+  });
+
+  it('rejects enabling code server when it is already enabled', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const app = { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' };
+
+    await dp.activateApplication(app, { groupType: 'on-demand', capacity: 'micro' });
+    await dp.setEditorEnabled(app, true);
+
+    await expect(plans.enableEditorPlan('app_demo_1')).rejects.toThrow('already enabled');
+  });
+
+  it('disables phpMyAdmin and executes it once the application is deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+    const app = { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' };
+
+    await dp.activateApplication(app, { groupType: 'on-demand', capacity: 'micro' });
+    await dp.setPmaEnabled(app, true);
+
+    const plan = await plans.disablePmaPlan('app_demo_1');
+    expect(plan.action).toBe('DISABLE_PMA');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const updated = await dp.getApplication(app);
+    expect(updated.isEnablePMA).toBe(false);
+  });
+
+  it('real client setEditorEnabled reads current app config then PATCHes /update with one field flipped', async () => {
+    let patchBody: Record<string, unknown> | undefined;
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      containerImage: 'devpanel/php:8.4-base', groupType: 'on-demand', capacity: 'micro',
+      capacityLimit: 'small_1', storage: 5, isEnableEditor: false, isEnablePMA: false,
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/update')) {
+        patchBody = JSON.parse(String(init?.body));
+        return { ok: true, text: async () => JSON.stringify({ ...appJson, isEnableEditor: true }) };
+      }
+      return { ok: true, text: async () => JSON.stringify(appJson) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const result = await client.setEditorEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true);
+      expect(patchBody?.isEnableEditor).toBe(true);
+      expect(patchBody?.containerImage).toBe('devpanel/php:8.4-base');
+      expect(patchBody?.capacity).toBe('micro');
+      expect(patchBody?.capacityLimit).toBe('small_1');
+      expect(patchBody?.storage).toBe(5);
+      expect(result.isEnableEditor).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('real client setPmaEnabled throws clearly when a required field is missing from the live application state', async () => {
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      // containerImage/groupType/capacity/capacityLimit/storage intentionally absent
+    };
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify(appJson) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      await expect(client.setPmaEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true))
+        .rejects.toThrow('current "containerImage" could not be read');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('real client application normalization', () => {
   it('extracts project/workspace ids from scalar or nested refs', async () => {
     const cases = [

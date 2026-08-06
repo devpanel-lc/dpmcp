@@ -116,6 +116,50 @@ export class PlanService {
     });
   }
 
+  async enableEditorPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'EDITOR', true);
+  }
+
+  async disableEditorPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'EDITOR', false);
+  }
+
+  async enablePmaPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'PMA', true);
+  }
+
+  async disablePmaPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'PMA', false);
+  }
+
+  private async toggleFeaturePlan(application: string, ownerId: string, workspaceId: string | undefined, feature: 'EDITOR' | 'PMA', enabled: boolean): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
+    if (app.status !== 'DEPLOY_APPLICATION_SUCCESS') {
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Code server/phpMyAdmin can only be toggled on a deployed application (status DEPLOY_APPLICATION_SUCCESS); activate it first with devpanel_plan_activate_application.`);
+    }
+    const label = feature === 'EDITOR' ? 'Code server' : 'phpMyAdmin';
+    const currentlyEnabled = feature === 'EDITOR' ? app.isEnableEditor : app.isEnablePMA;
+    if (currentlyEnabled === enabled) {
+      throw new Error(`${label} is already ${enabled ? 'enabled' : 'disabled'} on ${app.name ?? app.id}.`);
+    }
+    const action: PlanAction = feature === 'EDITOR' ? (enabled ? 'ENABLE_EDITOR' : 'DISABLE_EDITOR') : (enabled ? 'ENABLE_PMA' : 'DISABLE_PMA');
+    const verb = enabled ? 'Enable' : 'Disable';
+    return this.createPlan({
+      action, risk: 'MEDIUM', ownerId,
+      summary: `${verb} ${label} on ${app.name ?? app.id}`,
+      target: appSummary(app),
+      proposedInput: { ...appSummary(app), enabled },
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in DEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, action, `${verb} ${label} via PATCH (contract not yet verified against a real DevPanel request -- see README.md)`, true),
+        step(3, 'VERIFY', `Confirm ${label} is now ${enabled ? 'enabled' : 'disabled'}`, false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `${label} is ${enabled ? 'enabled' : 'disabled'} on ${app.name ?? app.id}.`,
+      rollback: `${enabled ? 'Disable' : 'Enable'} it again via the corresponding devpanel_plan_${enabled ? 'disable' : 'enable'}_${feature === 'EDITOR' ? 'code_server' : 'phpmyadmin'} tool.`,
+    });
+  }
+
   async backupPlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
     const app = await this.resolver.resolve(application);
     return this.createPlan({

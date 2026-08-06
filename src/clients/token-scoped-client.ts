@@ -87,6 +87,14 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().deactivateApplication(app);
   }
 
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.client().setEditorEnabled(app, enabled);
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.client().setPmaEnabled(app, enabled);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     return this.client().createBackup(app);
   }

@@ -176,6 +176,22 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(existing);
   }
 
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.isEnableEditor = enabled;
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.isEnablePMA = enabled;
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     await this.getApplication(app);
     const backup: BackupRef = {

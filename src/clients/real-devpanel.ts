@@ -26,6 +26,28 @@ const ACTIVATE_DEFAULTS = {
   isEnablePMA: false,
 };
 
+// Mirrors a real DevPanel UI application-update request (captured 2026-08-06). This
+// endpoint expects the application's FULL current config on every PATCH -- the DevPanel
+// UI reads current state and PATCHes it back with one field flipped, it does not accept
+// a partial/delta body. buildUpdateAppPayload() re-reads the application first and
+// extracts as many of these fields as possible from its raw GET response; the values
+// below are only the last-resort fallback for fields presumed safe to default (fixed
+// platform conventions). Fields where a wrong guess could silently downgrade a real
+// app's resources (container image, capacity/capacityLimit, storage, groupType) are
+// NOT defaulted from here -- buildUpdateAppPayload() throws if they can't be read live.
+const UPDATE_APP_SAFE_DEFAULTS = {
+  appRoot: '/var/www/html',
+  webRoot: '/var/www/html/web',
+  codesDirectory: '/var/www/html',
+  startAppScript: 'tail -f ~/dev/log',
+  imagePullPolicy: 'Always',
+  filePermissionLevel: 'stricterPermission',
+  isEnablePPA: false,
+  isEnableBasicAuth: false,
+  ipRestrictionSlug: '',
+  isEnable: true,
+};
+
 function asRecord(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
   return v as Record<string, unknown>;
@@ -33,6 +55,16 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function firstString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) if (typeof obj[k] === 'string') return obj[k] as string;
+  return undefined;
+}
+
+function firstNumber(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const k of keys) if (typeof obj[k] === 'number') return obj[k] as number;
+  return undefined;
+}
+
+function firstBoolean(obj: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const k of keys) if (typeof obj[k] === 'boolean') return obj[k] as boolean;
   return undefined;
 }
 
@@ -120,6 +152,8 @@ export class RealDevPanelClient implements DevPanelClient {
       hostname: firstString(r, 'hostname', 'applicationURL') ?? fallback?.hostname,
       status: firstString(r, 'status') ?? fallback?.status,
       originBranch: firstString(r, 'originBranch') ?? fallback?.originBranch,
+      isEnableEditor: firstBoolean(r, 'isEnableEditor') ?? fallback?.isEnableEditor,
+      isEnablePMA: firstBoolean(r, 'isEnablePMA') ?? fallback?.isEnablePMA,
       raw,
     };
   }
@@ -322,6 +356,73 @@ export class RealDevPanelClient implements DevPanelClient {
       if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
     }
     return last;
+  }
+
+  // Confirmed real request (captured 2026-08-06): PATCH .../applications/{id}/update
+  // with the application's full config, one field flipped. See UPDATE_APP_SAFE_DEFAULTS
+  // above and buildUpdateAppPayload() below for how the rest of the body is sourced.
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.updateApp(app, { isEnableEditor: enabled });
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.updateApp(app, { isEnablePMA: enabled });
+  }
+
+  private async updateApp(app: ApplicationRef, overrides: Record<string, unknown>): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const body = { ...(await this.buildUpdateAppPayload(app)), ...overrides };
+    const raw = await this.request(
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/update', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
+      { method: 'PATCH', body: JSON.stringify(body) },
+    );
+    return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+  }
+
+  private async buildUpdateAppPayload(app: ApplicationRef): Promise<Record<string, unknown>> {
+    const current = await this.getApplication(app);
+    const r = asRecord(current.raw);
+    const requireString = (key: string): string => {
+      const v = firstString(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
+    const requireNumber = (key: string): number => {
+      const v = firstNumber(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
+    return {
+      appRoot: firstString(r, 'appRoot') ?? UPDATE_APP_SAFE_DEFAULTS.appRoot,
+      webRoot: firstString(r, 'webRoot') ?? UPDATE_APP_SAFE_DEFAULTS.webRoot,
+      codesDirectory: firstString(r, 'codesDirectory') ?? UPDATE_APP_SAFE_DEFAULTS.codesDirectory,
+      startAppScript: firstString(r, 'startAppScript') ?? UPDATE_APP_SAFE_DEFAULTS.startAppScript,
+      containerImage: requireString('containerImage'),
+      imagePullPolicy: firstString(r, 'imagePullPolicy') ?? UPDATE_APP_SAFE_DEFAULTS.imagePullPolicy,
+      groupType: requireString('groupType'),
+      capacity: requireString('capacity'),
+      capacityLimit: requireString('capacityLimit'),
+      storage: requireNumber('storage'),
+      isEnablePMA: firstBoolean(r, 'isEnablePMA') ?? false,
+      isEnablePPA: firstBoolean(r, 'isEnablePPA') ?? UPDATE_APP_SAFE_DEFAULTS.isEnablePPA,
+      isEnableEditor: firstBoolean(r, 'isEnableEditor') ?? false,
+      filePermissionLevel: firstString(r, 'filePermissionLevel') ?? UPDATE_APP_SAFE_DEFAULTS.filePermissionLevel,
+      isEnable: firstBoolean(r, 'isEnable') ?? UPDATE_APP_SAFE_DEFAULTS.isEnable,
+      isEnableBasicAuth: firstBoolean(r, 'isEnableBasicAuth') ?? UPDATE_APP_SAFE_DEFAULTS.isEnableBasicAuth,
+      ipRestrictionSlug: firstString(r, 'ipRestrictionSlug') ?? UPDATE_APP_SAFE_DEFAULTS.ipRestrictionSlug,
+    };
   }
 
   // DeactivateLAMAppDTO is an empty schema in the OpenAPI spec (like ActivateLAMAppDTO

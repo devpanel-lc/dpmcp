@@ -227,6 +227,37 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ application, workspaceId }) => text({ plan: await plans.deactivatePlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
+  const toggleFeatureInputSchema = {
+    workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
+    application: z.string().min(1).describe('Application ID, name, or search query'),
+  };
+  const toggleFeatureAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+  const REAL_MODE_CAVEAT = 'Uses a confirmed real DevPanel request (PATCH .../applications/{id}/update with the app\'s full config, one field flipped). Other current settings (container image, capacity, storage) are read live and carried over unchanged; the execute step fails with a clear error if any of those cannot be read from DevPanel rather than guessing them.';
+
+  server.registerTool('devpanel_plan_enable_code_server', {
+    description: `PLAN ONLY. Create a proposed plan to enable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: toggleFeatureInputSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.enableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_disable_code_server', {
+    description: `PLAN ONLY. Create a proposed plan to disable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: toggleFeatureInputSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.disableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_enable_phpmyadmin', {
+    description: `PLAN ONLY. Create a proposed plan to enable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: toggleFeatureInputSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.enablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_disable_phpmyadmin', {
+    description: `PLAN ONLY. Create a proposed plan to disable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: toggleFeatureInputSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.disablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
     inputSchema: { ...wsOpt, application: z.string().min(1) },

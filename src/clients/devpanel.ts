@@ -43,6 +43,8 @@ export interface DevPanelClient {
   createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef>;
   activateApplication(app: ApplicationRef, config: ActivateConfig): Promise<ApplicationRef>;
   deactivateApplication(app: ApplicationRef): Promise<ApplicationRef>;
+  setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef>;
+  setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef>;
   createBackup(app: ApplicationRef): Promise<BackupRef>;
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;

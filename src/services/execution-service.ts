@@ -104,6 +104,22 @@ export class ExecutionService {
           name: '',
         });
       }
+      case 'ENABLE_EDITOR': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setEditorEnabled(app, true);
+      }
+      case 'DISABLE_EDITOR': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setEditorEnabled(app, false);
+      }
+      case 'ENABLE_PMA': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setPmaEnabled(app, true);
+      }
+      case 'DISABLE_PMA': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setPmaEnabled(app, false);
+      }
     }
   }
 
