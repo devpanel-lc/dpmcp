@@ -1,20 +1,16 @@
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
 import { config } from '../config.js';
-import { getAccessToken, getLoginUrl, getOwnerId } from '../auth/session.js';
-
-/**
- * Identity of the plan owner. With SSO this is the Cognito `sub` claim from
- * the server-side session; without a session it is 'local'.
- */
-export function currentOwnerId(): string {
-  return getOwnerId();
-}
+import { getAccessToken, getLoginUrl } from '../auth/session.js';
 
 export class TokenScopedDevPanelClient implements DevPanelClient {
   private readonly mockClient = new MockDevPanelClient();
+
+  getCallerIdentity(): string {
+    return this.client().getCallerIdentity();
+  }
 
   private client(): DevPanelClient {
     if (config.mode === 'mock') return this.mockClient;
@@ -25,6 +21,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
       );
     }
     return new RealDevPanelClient(token, true); // SSO session token — supports refresh on 401
+  }
+
+  async whoami(): Promise<unknown> {
+    return this.client().whoami();
   }
 
   async listWorkspaces(): Promise<WorkspaceRef[]> {
@@ -67,6 +67,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().listBackups(app);
   }
 
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    return this.client().getBackupFile(app, backupId, fileId);
+  }
+
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
     return this.client().createApplication(input);
   }
@@ -79,6 +83,18 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().activateApplication(app, activateConfig);
   }
 
+  async deactivateApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    return this.client().deactivateApplication(app);
+  }
+
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.client().setEditorEnabled(app, enabled);
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.client().setPmaEnabled(app, enabled);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     return this.client().createBackup(app);
   }
@@ -89,6 +105,14 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     return this.client().deleteApplication(app);
+  }
+
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    return this.client().deleteProject(project);
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    return this.client().deleteWorkspace(workspace);
   }
 
   async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {

@@ -11,7 +11,7 @@ import { config } from './config.js';
 import type { DevPanelClientFactory } from './clients/devpanel.js';
 import { buildServer } from './server.js';
 import type { PlanStore } from './stores/plan-store.js';
-import { McpOAuthProvider } from './auth/mcp-oauth.js';
+import { McpOAuthProvider, startOAuthMapSweep } from './auth/mcp-oauth.js';
 import { handleCallbackRequest, handleLoginRequest } from './auth/login-server.js';
 import { createReviewHandler } from './approval/review-server.js';
 
@@ -61,8 +61,9 @@ function hostGuard(): RequestHandler {
 /**
  * Print which env var is guarding /mcp's static bearer auth (and a
  * non-secret fingerprint of it) so a token mismatch is diagnosable from the
- * startup log alone instead of reading source. Mirrors config.mcpBearerToken's
- * own fallback: DP_MCP_BEARER_TOKEN wins, else DP_ACCESS_TOKEN, else none.
+ * startup log alone instead of reading source. Reads config.mcpBearerTokenSource,
+ * the single computed source of truth for the DP_MCP_BEARER_TOKEN / DP_ACCESS_TOKEN
+ * fallback rule.
  */
 function logStaticBearerSource(): void {
   if (config.authMode === 'sso') {
@@ -74,12 +75,30 @@ function logStaticBearerSource(): void {
     return;
   }
   const fingerprint = (token: string) => `…${token.slice(-6)}`;
-  if (process.env.DP_MCP_BEARER_TOKEN) {
-    console.error(`[http] /mcp static bearer: DP_MCP_BEARER_TOKEN (${fingerprint(process.env.DP_MCP_BEARER_TOKEN)})`);
-  } else if (config.accessToken) {
-    console.error(`[http] /mcp static bearer: DP_ACCESS_TOKEN fallback (${fingerprint(config.accessToken)}) — set DP_MCP_BEARER_TOKEN to use a separate token`);
-  } else {
-    console.error('[http] /mcp static bearer: none (DP_MCP_BEARER_TOKEN/DP_ACCESS_TOKEN both empty) — only OAuth-issued tokens accepted');
+  switch (config.mcpBearerTokenSource) {
+    case 'DP_MCP_BEARER_TOKEN':
+      console.error(`[http] /mcp static bearer: DP_MCP_BEARER_TOKEN (${fingerprint(config.mcpBearerToken)})`);
+      break;
+    case 'DP_ACCESS_TOKEN':
+      console.error(`[http] /mcp static bearer: DP_ACCESS_TOKEN fallback (${fingerprint(config.mcpBearerToken)}) — set DP_MCP_BEARER_TOKEN to use a separate token`);
+      break;
+    default:
+      console.error('[http] /mcp static bearer: none (DP_MCP_BEARER_TOKEN/DP_ACCESS_TOKEN both empty) — only OAuth-issued tokens accepted');
+  }
+}
+
+/** This process itself never terminates TLS -- it expects a TLS-terminating
+ *  proxy (Railway, nginx, etc.) in front of it. Warn loudly at startup if
+ *  DP_PUBLIC_BASE_URL isn't https://, since bearer tokens (OAuth grants and,
+ *  in token mode, real DevPanel access tokens) would otherwise be sent to
+ *  this origin in cleartext. */
+function warnIfCleartext(): void {
+  if (!config.publicBaseUrl.startsWith('https://')) {
+    console.error(
+      `[http] WARNING: DP_PUBLIC_BASE_URL (${config.publicBaseUrl}) does not start with https:// -- ` +
+      'bearer tokens will be sent in cleartext. Put a TLS-terminating proxy in front of this server ' +
+      'for any deployment reachable outside localhost.'
+    );
   }
 }
 
@@ -87,10 +106,38 @@ function isInitializeRequest(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as { method?: unknown }).method === 'initialize';
 }
 
+/** Reject non-JSON POST bodies to /mcp before they reach express.json() /
+ *  the transport, so a caller that forgets the content-type header gets a
+ *  diagnosable 415 instead of an empty parsed body masquerading as a
+ *  confusing "missing MCP session" 400. GET/DELETE have no body to check. */
+function requireJsonContentType(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.headers['content-type']?.startsWith('application/json')) {
+      res.status(415).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Content-Type must be application/json' },
+        id: null,
+      });
+      return;
+    }
+    next();
+  };
+}
+
 /**
  * /mcp request handling with in-memory stateful sessions:
  * the first request must be `initialize` (creates the session + transport),
- * subsequent requests carry the mcp-session-id header.
+ * subsequent requests carry the mcp-session-id header. One handler instance
+ * (one `sessions` map) is shared across the POST/GET/DELETE routes registered
+ * for it -- a session created via POST must be found by the later GET (SSE
+ * stream) and DELETE (teardown) requests for the same session id.
+ *
+ * A fresh McpServer is built per session (not shared/reused): McpServer.connect()
+ * binds a server instance to exactly one active transport, so reusing one
+ * instance across concurrent sessions breaks every session after the first
+ * (confirmed by a real regression: reusing one instance made a second
+ * concurrent `initialize` fail with a 500). registerTools() itself is cheap
+ * in-memory registration, not a real per-session cost worth avoiding.
  */
 function handleMcpRequest(dpFactory: DevPanelClientFactory, store: PlanStore): RequestHandler {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
@@ -149,6 +196,8 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   const mcpUrl = new URL(`${config.publicBaseUrl}/mcp`);
   const provider = new McpOAuthProvider(config.mcpBearerToken || undefined);
   logStaticBearerSource();
+  warnIfCleartext();
+  startOAuthMapSweep();
   const app = express();
   app.disable('x-powered-by');
 
@@ -192,9 +241,13 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
     }),
   );
-  app.post('/mcp', express.json({ limit: '4mb' }), handleMcpRequest(dpFactory, store));
-  app.get('/mcp', handleMcpRequest(dpFactory, store));
-  app.delete('/mcp', handleMcpRequest(dpFactory, store));
+  // One handler instance shared across all three verbs -- see handleMcpRequest's
+  // doc comment for why (a session created via POST must be reachable from the
+  // GET/DELETE requests for that same session id).
+  const mcpHandler = handleMcpRequest(dpFactory, store);
+  app.post('/mcp', requireJsonContentType(), express.json({ limit: '4mb' }), mcpHandler);
+  app.get('/mcp', mcpHandler);
+  app.delete('/mcp', mcpHandler);
 
   // External review UI (last: everything else 404s through its handler).
   app.use((req, res) => {

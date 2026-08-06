@@ -2,7 +2,7 @@
 
 ## What this is
 
-MCP server (TypeScript, stdio transport) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan via MCP client-native elicitation or external review UI**.
+MCP server (TypeScript, stdio or http transport via `DP_TRANSPORT`) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan via MCP client-native elicitation or external review UI**.
 
 ## Commands
 
@@ -24,6 +24,8 @@ MCP server (TypeScript, stdio transport) for planning, reviewing, approving, and
 Default `DP_MODE=mock` requires no external services. Copy `.env.example` → `.env` and run `npm run dev`.
 
 `DP_MODE=real` requires `DP_API_BASE_URL`, `DP_ACCESS_TOKEN`, `DP_DEFAULT_WORKSPACE_ID`.
+
+`DP_AUTH_MODE` (`off` default, `sso`, `token`) controls how `/mcp` authenticates callers and how the DevPanel credential is obtained -- independent of `DP_TRANSPORT`. `DP_MCP_BEARER_TOKEN` is the static bearer `/mcp` requires in `off` mode (falls back to `DP_ACCESS_TOKEN`). See `.env.example` for the full annotated list of vars per mode.
 
 Real CREATE is gated behind `DP_ENABLE_REAL_CREATE=true` — see `config/create-profiles/drupal11-demo.json`. The profile's `verified` field must be `true` before enabling; do not guess the create-project response contract.
 
@@ -59,6 +61,11 @@ src/utils/                        → hash.ts (SHA-256 plan fingerprint), finger
 src/generated/devpanel-api.d.ts   → generated from devpanel-openapi.json via `npm run generate:api`, do not hand-edit
 src/clients/api-paths.ts          → apiPath() types RealDevPanelClient's endpoint paths against generated paths
 src/tools/read-only-tool.ts       → defineReadOnlyTool() for tools that are structurally read-only only
+src/http-server.ts                → public HTTP transport: /mcp (MCP OAuth), /login, /callback, /healthz
+src/auth/session.ts               → in-memory Cognito SSO session store (access/refresh/id tokens), never persisted to disk
+src/auth/cognito.ts               → Cognito hosted-UI client: authorize URL, PKCE, code exchange, refresh
+src/auth/mcp-oauth.ts             → this server's own OAuth provider for /mcp (tokens scoped to MCP tools, never sent to DevPanel)
+src/auth/login-server.ts          → drives the Cognito login/callback flow (loopback in stdio, /login+/callback in http)
 ```
 
 ### Key design constraints

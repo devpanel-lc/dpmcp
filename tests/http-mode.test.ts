@@ -345,6 +345,52 @@ describe('http transport server', () => {
     expect(reuse.status).toBe(200);
   });
 
+  it('a session created via POST is reachable via DELETE (shared session map across verbs)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const init = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${tokens.access}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    // Before the fix, POST/GET/DELETE each had their own private sessions Map,
+    // so DELETE (issued by a different app.delete('/mcp', ...) handler
+    // instance) would never find a session created via POST -- 404.
+    const del = await fetch(`${ctx.base}/mcp`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${tokens.access}`, 'mcp-session-id': sessionId! },
+    });
+    expect(del.status).not.toBe(404);
+  });
+
+  it('rejects a POST to /mcp with a non-JSON content-type (415)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const res = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tokens.access}`, 'content-type': 'text/plain' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(415);
+  });
+
   it('accepts the static bearer token in off mode', async () => {
     config.mcpBearerToken = 'test-static-token';
     ctx = await startApp();
@@ -398,41 +444,49 @@ describe('http transport server', () => {
     expect(list.status).toBe(200);
   });
 
-  it('runs the OAuth dance in off mode without a DevPanel session (no /login redirect)', async () => {
+  it('refuses the OAuth dance entirely in off mode -- the static bearer is the only way in', async () => {
     config.authMode = 'off';
     const c = await startApp();
     ctx = c;
     const clientId = await registerClient(c.base);
-    const { verifier, challenge } = generatePkce();
+    const { challenge } = generatePkce();
 
-    // No Cognito session exists, but off mode renders the consent page
-    // directly instead of bouncing to /login (Bug 1 fix).
+    // Minting an OAuth grant in off mode would bypass the static-bearer gate
+    // (a shared secret this server actually enforces there) -- /authorize
+    // must refuse outright, with or without a Cognito session, instead of
+    // rendering consent.
     const authorizeRes = await fetch(
       `${c.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
         `&code_challenge=${challenge}&code_challenge_method=S256&state=s2`,
       { redirect: 'manual' },
     );
-    expect(authorizeRes.status).toBe(200);
-    const html = await authorizeRes.text();
-    expect(html).toContain('Approve');
-    const tokenMatch = html.match(/name="token" value="([^"]+)"/);
-    expect(tokenMatch).not.toBeNull();
+    expect(authorizeRes.status).toBe(302);
+    const location = new URL(authorizeRes.headers.get('location') ?? '');
+    expect(location.origin + location.pathname).toBe('http://127.0.0.1:9999/callback');
+    expect(location.searchParams.get('error')).toBe('unauthorized_client');
+    expect(location.searchParams.get('state')).toBe('s2');
+    expect(location.searchParams.get('code')).toBeNull();
+  });
 
-    const approved = await fetch(`${c.base}/authorize/consent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ token: tokenMatch![1], decision: 'approve' }).toString(),
-      redirect: 'manual',
-    });
-    expect(approved.status).toBe(302);
-    const callbackUrl = new URL(approved.headers.get('location') ?? '');
-    expect(callbackUrl.searchParams.get('state')).toBe('s2');
-    const code = callbackUrl.searchParams.get('code');
-    expect(code).toBeTruthy();
+  it('refuses the OAuth dance entirely in token mode too', async () => {
+    config.mode = 'real';
+    config.authMode = 'token';
+    config.apiBaseUrl = 'http://devpanel.test';
+    const dpFactory: DevPanelClientFactory = (token) => new RealDevPanelClient(token ?? '', false, 'test');
+    const c = await startApp(dpFactory);
+    ctx = c;
+    const clientId = await registerClient(c.base);
+    const { challenge } = generatePkce();
 
-    const tokens = await exchangeCode(c.base, clientId, code!, verifier);
-    expect(tokens.access).toBeTruthy();
-    expect(tokens.refresh).toBeTruthy();
+    const authorizeRes = await fetch(
+      `${c.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&state=s3`,
+      { redirect: 'manual' },
+    );
+    expect(authorizeRes.status).toBe(302);
+    const location = new URL(authorizeRes.headers.get('location') ?? '');
+    expect(location.searchParams.get('error')).toBe('unauthorized_client');
+    expect(location.searchParams.get('code')).toBeNull();
   });
 
   it('forwards each session\'s own bearer token to DevPanel in token mode (no shared secret)', async () => {

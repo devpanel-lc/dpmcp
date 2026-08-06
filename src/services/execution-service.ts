@@ -32,6 +32,20 @@ export class ExecutionService {
         throw new Error('Plan is stale: the target environment no longer exists. Create a new plan.');
       }
     }
+    if (plan.action === 'DELETE_PROJECT' && plan.preconditions.projectId) {
+      const apps = await this.dp.listProjectApplications(plan.preconditions.workspaceId ?? '', plan.preconditions.projectId);
+      if (apps.length > 0) {
+        await this.store.setStatus(plan.id, 'STALE');
+        throw new Error(`Plan is stale: the project now has ${apps.length} application(s). Delete them first, then create a new delete-project plan.`);
+      }
+    }
+    if (plan.action === 'DELETE_WORKSPACE' && plan.preconditions.workspaceId) {
+      const projects = await this.dp.listProjects(plan.preconditions.workspaceId);
+      if (projects.length > 0) {
+        await this.store.setStatus(plan.id, 'STALE');
+        throw new Error(`Plan is stale: the workspace now has ${projects.length} project(s). Delete them first, then create a new delete-workspace plan.`);
+      }
+    }
     if (!plan.preconditions.applicationId) return;
     const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
     if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
@@ -74,6 +88,10 @@ export class ExecutionService {
         const activateConfig = validateActivateConfig(rawConfig);
         return this.dp.activateApplication(app, activateConfig);
       }
+      case 'DEACTIVATE_APPLICATION': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.deactivateApplication(app);
+      }
       case 'BACKUP_APPLICATION': {
         const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.createBackup(app);
@@ -85,6 +103,35 @@ export class ExecutionService {
       case 'DELETE_APPLICATION': {
         const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.deleteApplication(app);
+      }
+      case 'DELETE_PROJECT': {
+        return this.dp.deleteProject({
+          id: plan.preconditions.projectId ?? '',
+          workspaceId: plan.preconditions.workspaceId ?? '',
+          name: '',
+        });
+      }
+      case 'DELETE_WORKSPACE': {
+        return this.dp.deleteWorkspace({
+          id: plan.preconditions.workspaceId ?? '',
+          name: '',
+        });
+      }
+      case 'ENABLE_EDITOR': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setEditorEnabled(app, true);
+      }
+      case 'DISABLE_EDITOR': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setEditorEnabled(app, false);
+      }
+      case 'ENABLE_PMA': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setPmaEnabled(app, true);
+      }
+      case 'DISABLE_PMA': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.setPmaEnabled(app, false);
       }
     }
   }

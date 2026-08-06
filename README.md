@@ -9,6 +9,7 @@ The core rule is simple:
 ## MVP scope
 
 Read:
+- whoami (DevPanel profile of the currently authenticated bearer/session)
 - list applications
 - get application
 - get application activities
@@ -17,9 +18,15 @@ Read:
 
 Plan-only:
 - create application
+- activate application (deploy to K8s)
+- deactivate application (undeploy/pause)
 - create manual backup
 - restore backup
 - delete application
+- delete project (blocked if the project still has applications -- delete those first)
+- delete workspace (blocked if the workspace still has projects -- delete those first)
+- enable/disable code server (VSCode) on a deployed application (see caveat below)
+- enable/disable phpMyAdmin on a deployed application (see caveat below)
 
 Execute:
 - `devpanel_approve_and_execute_plan(planId)` -- the only MCP tool allowed to mutate DevPanel
@@ -112,7 +119,7 @@ DP_ACCESS_TOKEN=...
 DP_DEFAULT_WORKSPACE_ID=...
 ```
 
-Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI.
+Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI -- but "present in the spec" is not the same as "verified real"; see the restore caveat below.
 
 **Real CREATE is intentionally disabled by default.** The endpoint contract is documented in the DevPanel OpenAPI (`POST /:workspaceId/projects` → `CreateProjectDTO`), but the OpenAPI's `instances[]` typing conflicts with the captured request shape, so a recorded real payload remains authoritative. Before enabling real creation:
 
@@ -126,6 +133,14 @@ Read, backup, restore, and delete use endpoints present in the supplied DevPanel
 Do not infer this contract from field names.
 
 **Activate has the same kind of divergence.** The OpenAPI's `ActivateLAMAppDTO` is an empty stub schema, so `RealDevPanelClient.activateApplication()` sends `ACTIVATE_DEFAULTS` (`src/clients/real-devpanel.ts`), a payload shape captured from a real DevPanel UI activate request. As with create, do not infer this contract from the OpenAPI spec or from field names -- update `ACTIVATE_DEFAULTS` only from a captured real request/response.
+
+**Deactivate is unverified, unlike activate.** `PATCH .../applications/{applicationId}/deactivate` (`ApplicationsController_deactivateApplication`) is a real, documented sibling of the activate endpoint, and `RealDevPanelClient.deactivateApplication()` mirrors `activateApplication()`'s PATCH-then-poll-until-status pattern (polling for `UNDEPLOY_APPLICATION_SUCCESS` instead of `DEPLOY_APPLICATION_SUCCESS`). But `DeactivateLAMAppDTO` is an empty stub schema like `ActivateLAMAppDTO` was, and no real deactivate request has been captured from the DevPanel UI yet, so the request body is currently an unverified guess (`{}`). Capture a real request/response (same Network-tab workflow as create/activate) before relying on this in real mode, and update the body accordingly.
+
+**Code server / phpMyAdmin toggle -- confirmed endpoint, but the request needs the app's full current config.** Toggling `isEnableEditor`/`isEnablePMA` on an already-deployed application (as opposed to setting them once at activate time via `ActivateConfig`) uses `PATCH .../applications/{applicationId}/update` (captured from the DevPanel UI 2026-08-06). Unlike a delta PATCH, this endpoint expects the *entire* application config on every call -- the DevPanel UI reads current state and PATCHes it back with one field flipped. `RealDevPanelClient.buildUpdateAppPayload()` re-reads the application via `getApplication()` and extracts as many fields as possible from its raw response; fields where a wrong guess could silently downgrade real resources (`containerImage`, `groupType`, `capacity`, `capacityLimit`, `storage`) are **not** defaulted -- the call throws a clear error if any of those can't be read live, rather than resetting them to the captured sample's values. The remaining structural fields (`appRoot`, `webRoot`, `codesDirectory`, `startAppScript`, `imagePullPolicy`, `filePermissionLevel`, `isEnableBasicAuth`, `ipRestrictionSlug`, `isEnable`, `isEnablePPA`) fall back to the captured sample (`UPDATE_APP_SAFE_DEFAULTS` in `src/clients/real-devpanel.ts`) since they're low-risk platform conventions. **Caveat:** the field names above are confirmed for the PATCH *request*; that `GET .../applications/{id}` exposes the same field names (used to read "current" values) is assumed, not independently verified -- if a real response uses different field names, the affected required fields will throw rather than silently guess, so this fails loud rather than corrupting app config.
+
+**Backup file download.** `GET .../backups/{backupId}/files/{fileId}` (used by `devpanel_get_backup_download_url`) has no response schema in the OpenAPI spec, but the real controller contract has been confirmed (`applications.controller.ts:684-742`): the request must include `?downloadURL=true` or the response is just file-object metadata (no URL). With that param, the response is JSON with a `downloadURL` field (a 1h pre-signed S3/DO/Azure/OVH URL), plus `downloadPgsqlURL` when the application and environment both have PgDB enabled. `RealDevPanelClient.getBackupFile()` sends the query param and `normalizeBackupFile()` reads both fields directly. `fileId` comes from `devpanel_list_backups` -- each backup's raw data carries full `databaseFile`/`filesFile`/`sourcecodeFile` objects, each with an `_id`.
+
+**Restore is disabled -- use phpMyAdmin instead.** `PATCH .../backups/{backupId}/restore` (`RealDevPanelClient.restoreBackup()`) is typed in the OpenAPI spec as a bodyless request returning 200 with no content, but that has never been confirmed against a live backend: create/activate/backup-download were all corrected by capturing a real request from the DevPanel UI, and DevPanel has no UI restore feature to capture one from either. Rather than ship an unverifiable mutation, `devpanel_plan_restore_application` never creates a plan -- it always returns a warning message directing the user to the manual path: download the backup's database dump with `devpanel_get_backup_download_url` (databaseFile `_id` as `fileId`) and import it into the application's database via phpMyAdmin. `RealDevPanelClient.restoreBackup()` and the `RESTORE_APPLICATION` execution-service case are left in place but are unreachable through the MCP tools while this gate is active.
 
 ## Keeping in sync with `devpanel-openapi.json`
 
@@ -141,27 +156,27 @@ npm test
 
 The spec documents request bodies only -- it has no response schemas for `Workspace`, `Application`, `Project`, `Backup`, etc., so response shapes in `src/domain/types.ts` remain hand-curated and defensively normalized at runtime; see the comment at the top of that file.
 
-## HTTP transport mode (per-user Bearer tokens)
+## HTTP transport mode
 
-Set `DP_TRANSPORT=http` to run the MCP server over Streamable HTTP instead of stdio. Each request must carry an `Authorization: Bearer <token>` header. The token serves dual purpose:
-
-1. **Authentication** -- the token is forwarded to the DevPanel API as the `accessToken` for each request
-2. **Plan ownership** -- the SHA-256 hash of the token becomes the `ownerId` on every plan created by that caller
+`DP_TRANSPORT` (`stdio` default, or `http`) and `DP_AUTH_MODE` (`off` default, `sso`, or `token`) are independent settings. Transport picks stdio vs. public HTTP; auth mode picks how `/mcp` authenticates callers and how a DevPanel credential is obtained. `DP_MODE=mock` still works over `DP_TRANSPORT=http` -- transport doesn't force real mode.
 
 ```env
 DP_TRANSPORT=http
-DP_HTTP_HOST=127.0.0.1
-DP_HTTP_PORT=3100
-DP_HTTP_TLS_ENABLED=false  # set true + provide cert/key for production
-DP_HTTP_CERT_PATH=
-DP_HTTP_KEY_PATH=
+DP_PUBLIC_BASE_URL=https://your-server.example.com   # required in http mode
+DP_ALLOWED_HOSTS=                                     # optional Host-header allowlist; derived from DP_PUBLIC_BASE_URL by default
 ```
 
-The HTTP server binds to the configured host/port and accepts JSON-RPC requests using the MCP Streamable HTTP protocol. Plans created by one user cannot be approved or executed by a different token (owner identity is checked at execution time).
+There is no in-process TLS support -- run behind a TLS-terminating reverse proxy (Railway, nginx, Cloudflare Tunnel, etc.).
 
-**Security warning:** Without TLS (`DP_HTTP_TLS_ENABLED=false`), Bearer tokens are transmitted in cleartext. For production, either enable TLS with `DP_HTTP_TLS_ENABLED=true` + `DP_HTTP_CERT_PATH`/`DP_HTTP_KEY_PATH`, or run behind a TLS-terminating reverse proxy (nginx, Cloudflare Tunnel, etc.). When binding to `127.0.0.1`, traffic is local-only and does not cross the network.
+`DP_AUTH_MODE` controls `/mcp`'s auth behavior, independent of transport (see `.env.example` for the full annotated list of vars per mode):
 
-When `DP_TRANSPORT=http`, the `DP_MODE` setting is ignored (real mode is implicit since mock mode only applies to stdio local development).
+- **`off`** (default) -- a single shared `DP_ACCESS_TOKEN` is used for every caller. `/mcp` itself is gated by a static bearer: `DP_MCP_BEARER_TOKEN`, falling back to `DP_ACCESS_TOKEN` if unset. Fine for solo local dev; wrong for a shared deployment, since every caller acts as the same DevPanel identity.
+- **`sso`** -- the server logs into Cognito itself (`/login`, `/callback` in http mode; a loopback listener in stdio mode) and keeps the DevPanel token server-side only. `/mcp` is protected by this server's own MCP OAuth implementation (`src/auth/mcp-oauth.ts`); those tokens are scoped to the MCP tools only and are never sent to DevPanel.
+- **`token`** (bring-your-own-token) -- requires `DP_TRANSPORT=http`. There is no server-side secret: each MCP session's own `/mcp` bearer is forwarded 1:1 to DevPanel for that session, and DevPanel itself rejects invalid tokens.
+
+The MCP OAuth grant flow (`/authorize` -> `/token`) only ever issues usable tokens in `sso` mode, where a real Cognito login gates consent. In `off`/`token` mode `/authorize` refuses outright (`error=unauthorized_client`) instead of rendering consent -- minting a local grant there would either bypass the static-bearer gate (`off`) or hand out a token that isn't a real DevPanel credential (`token`).
+
+**Plan ownership** comes from `DevPanelClient.getCallerIdentity()` (`src/tools/register.ts` calls `dp.getCallerIdentity()` per session, not a global singleton). `TokenScopedDevPanelClient` (sso mode) returns the Cognito `sub`; `RealDevPanelClient` returns the Cognito `sub` in sso mode or a one-way hash of its own bearer token otherwise (`src/clients/real-devpanel.ts`) -- never the raw token, since `PLAN_OWNER_MISMATCH` errors echo this value back to whoever triggered the mismatch. Because each `token`-mode session gets its own `RealDevPanelClient` instance scoped to its own forwarded bearer (`src/index.ts`), different callers get different owner ids there too, so one user can no longer approve/execute a plan another user created. `off` mode still shares one identity across all callers (a single `RealDevPanelClient` built from the one shared `DP_ACCESS_TOKEN`), matching its single-shared-identity design.
 
 ## Important implementation constraints
 

@@ -9,7 +9,6 @@ import { ApprovalService } from '../approval/approval-service.js';
 import type { ElicitFn } from '../approval/providers/form-elicitation.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
-import { currentOwnerId } from '../clients/token-scoped-client.js';
 import { defineReadOnlyTool } from './read-only-tool.js';
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
@@ -24,6 +23,13 @@ function errorText(errorCode: ErrorCode, message: string, details?: Record<strin
 const wsOpt = {
   workspaceId: z.string().default(config.defaultWorkspaceId)
     .transform(v => v || config.defaultWorkspaceId),
+};
+
+/** Shared by tools that resolve a single application by id/name/search (activate,
+ *  deactivate, and the code-server/phpMyAdmin toggle tools). */
+const applicationLookupSchema = {
+  workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
+  application: z.string().min(1).describe('Application ID, name, or search query'),
 };
 
 /**
@@ -58,11 +64,21 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   const plans = new PlanService(dp, store);
   const executor = new ExecutionService(dp, store);
   const resolver = new ApplicationResolver(dp);
+  // Per-dp-instance identity, not a global session singleton: in token auth
+  // mode `dp` is scoped to this session's own forwarded bearer, so different
+  // callers get different owner ids and can't approve/execute each other's
+  // plans. See DevPanelClient.getCallerIdentity().
+  const currentOwnerId = () => dp.getCallerIdentity();
 
   const elicitationFn = withElicitationGuard(server.server.elicitInput.bind(server.server));
   const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
 
   // ---- Discovery tools ----
+
+  defineReadOnlyTool(server, 'devpanel_whoami',
+    'Read-only. Get the DevPanel profile of whichever bearer token/session this MCP connection is authenticated as -- useful to confirm which DevPanel identity a token-mode session actually resolves to.',
+    {},
+    async () => text(await dp.whoami()));
 
   defineReadOnlyTool(server, 'devpanel_list_workspaces',
     'Read-only. List all DevPanel workspaces accessible to the authenticated user.',
@@ -154,6 +170,11 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     { ...wsOpt, application: z.string().min(1) },
     async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.listBackups(app)); });
 
+  defineReadOnlyTool(server, 'devpanel_get_backup_download_url',
+    'Read-only. Get a pre-signed download URL (valid 1h) for a specific file from an application backup. Obtain backupId and fileId from devpanel_list_backups -- each backup\'s raw data has databaseFile, filesFile, and sourcecodeFile objects, each with an _id to pass as fileId. For PgDB-enabled applications the response also includes downloadPgsqlURL.',
+    { ...wsOpt, application: z.string().min(1), backupId: z.string().min(1), fileId: z.string().min(1) },
+    async ({ application, workspaceId, backupId, fileId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getBackupFile(app, backupId, fileId)); });
+
   // ---- Plan creation tools ----
 
   server.registerTool('devpanel_plan_create_application', {
@@ -171,8 +192,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   server.registerTool('devpanel_plan_activate_application', {
     description: 'PLAN ONLY. Create an immutable proposed plan to activate (deploy to K8s) an existing DevPanel application. The application must be in UNDEPLOY_APPLICATION_SUCCESS status; if it is already in DEPLOY_APPLICATION_SUCCESS status, no activation is needed.',
     inputSchema: {
-      workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
-      application: z.string().min(1).describe('Application ID, name, or search query'),
+      ...applicationLookupSchema,
       groupType: z.enum(['spot', 'on-demand']).default('on-demand'),
       capacity: z.string().default('micro'),
       capacityLimit: z.string().optional(),
@@ -213,23 +233,75 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     return text({ plan: await plans.activatePlan(args.application, activateConfig, currentOwnerId(), args.workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' });
   });
 
+  server.registerTool('devpanel_plan_deactivate_application', {
+    description: 'PLAN ONLY. Create an immutable proposed plan to deactivate (undeploy/pause, stop serving traffic) an existing DevPanel application. The application must be in DEPLOY_APPLICATION_SUCCESS status; if it is already in UNDEPLOY_APPLICATION_SUCCESS status, no deactivation is needed. Storage/data is preserved -- use devpanel_plan_activate_application to bring it back.',
+    inputSchema: applicationLookupSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ application, workspaceId }) => text({ plan: await plans.deactivatePlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  const toggleFeatureAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+  const REAL_MODE_CAVEAT = 'Uses a confirmed real DevPanel request (PATCH .../applications/{id}/update with the app\'s full config, one field flipped). Other current settings (container image, capacity, storage) are read live and carried over unchanged; the execute step fails with a clear error if any of those cannot be read from DevPanel rather than guessing them.';
+
+  server.registerTool('devpanel_plan_enable_code_server', {
+    description: `PLAN ONLY. Create a proposed plan to enable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: applicationLookupSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.enableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_disable_code_server', {
+    description: `PLAN ONLY. Create a proposed plan to disable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: applicationLookupSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.disableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_enable_phpmyadmin', {
+    description: `PLAN ONLY. Create a proposed plan to enable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: applicationLookupSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.enablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_disable_phpmyadmin', {
+    description: `PLAN ONLY. Create a proposed plan to disable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
+    inputSchema: applicationLookupSchema,
+    annotations: toggleFeatureAnnotations,
+  }, async ({ application, workspaceId }) => text({ plan: await plans.disablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    inputSchema: applicationLookupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId(), workspaceId) }));
 
   server.registerTool('devpanel_plan_restore_application', {
-    description: 'PLAN ONLY. Create a proposed restore plan for a specific or latest backup. Does not change DevPanel.',
+    description: 'DISABLED. Restoring a backup is not supported via DevPanel MCP or the DevPanel UI. Instead, get the database dump with devpanel_get_backup_download_url and import it into the application\'s database using phpMyAdmin.',
     inputSchema: { ...wsOpt, application: z.string().min(1), backupId: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId, backupId }) => text({ plan: await plans.restorePlan(application, backupId, currentOwnerId()) }));
+  }, async () => text({
+    status: 'unsupported',
+    warning: 'Restoring a backup is not supported via DevPanel MCP -- DevPanel has no UI restore feature either, so this endpoint\'s contract has never been verified against a real backend (see README.md).',
+    manualSteps: [
+      'Call devpanel_get_backup_download_url with the backup\'s databaseFile _id as fileId to get the database dump.',
+      'Import that dump into the application\'s database using phpMyAdmin.',
+    ],
+  }));
 
   server.registerTool('devpanel_plan_delete_application', {
     description: 'PLAN ONLY. Create a proposed deletion plan after reading current application and backup state. Does not change DevPanel.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    inputSchema: applicationLookupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.deletePlan(application, currentOwnerId(), workspaceId) }));
+
+  server.registerTool('devpanel_plan_delete_project', {
+    description: 'PLAN ONLY. Create a proposed plan to delete a DevPanel project. If the project still has applications, this fails and lists them -- delete all of them first with devpanel_plan_delete_application (and devpanel_approve_and_execute_plan) before retrying.',
+    inputSchema: { ...wsOpt, project: z.string().min(1).describe('Project ID or name') },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ project, workspaceId }) => text({ plan: await plans.deleteProjectPlan(workspaceId, project, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_delete_workspace', {
+    description: 'PLAN ONLY. Create a proposed plan to delete a DevPanel workspace. If the workspace still has projects, this fails and lists them -- delete all of them first with devpanel_plan_delete_project (each project must itself have zero applications) before retrying.',
+    inputSchema: { workspace: z.string().min(1).describe('Workspace ID or name') },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ workspace }) => text({ plan: await plans.deleteWorkspacePlan(workspace, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_create_workspace', {
     description: 'PLAN ONLY. Create an immutable proposed plan to create a DevPanel workspace on an existing environment (no cluster provisioning). Obtain the environmentId from devpanel_list_environments. Does not change DevPanel until a human approves the plan.',
