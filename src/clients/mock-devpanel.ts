@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
@@ -112,6 +112,12 @@ export class MockDevPanelClient implements DevPanelClient {
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
     return structuredClone(this.backups.get(app.id) ?? []);
+  }
+
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    const backup = (this.backups.get(app.id) ?? []).find(b => b.id === backupId);
+    if (!backup) throw new Error(`Backup not found: ${backupId}`);
+    return { backupId, fileId, downloadURL: `https://mock.devpanel.invalid/backups/${backupId}/files/${fileId}` };
   }
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {

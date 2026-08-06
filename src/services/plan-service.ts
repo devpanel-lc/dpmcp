@@ -102,19 +102,6 @@ export class PlanService {
     });
   }
 
-  async restorePlan(application: string, backupId?: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
-    const backups = await this.dp.listBackups(app);
-    const selected = backupId ? backups.find(b => b.id === backupId) : backups[0];
-    if (!selected) throw new Error(backupId ? `Backup not found: ${backupId}` : 'No backup exists to restore');
-    return this.createPlan({
-      action: 'RESTORE_APPLICATION', risk: 'HIGH', ownerId, summary: `Restore ${app.name ?? app.id} from backup ${selected.id}`,
-      target: { ...appSummary(app), backupId: selected.id }, proposedInput: { applicationId: app.id, backupId: selected.id },
-      steps: [step(1, 'REVALIDATE', 'Verify application and backup still match the reviewed plan', false), step(2, 'RESTORE_BACKUP', 'Restore the selected backup into the application', true), step(3, 'VERIFY_APPLICATION', 'Read application state after restore', false)],
-      preconditions: { ...snapshot(app), backupId: selected.id }, expectedResult: `Application restored from backup ${selected.id}.`, rollback: 'Create a new backup before restore in a production implementation; restore that safety backup if rollback is required.'
-    });
-  }
-
   async deletePlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
     const app = await this.resolver.resolve(application);
     const backups = await this.dp.listBackups(app);

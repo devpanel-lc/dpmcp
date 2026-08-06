@@ -112,7 +112,7 @@ DP_ACCESS_TOKEN=...
 DP_DEFAULT_WORKSPACE_ID=...
 ```
 
-Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI.
+Read, backup, restore, and delete use endpoints present in the supplied DevPanel OpenAPI -- but "present in the spec" is not the same as "verified real"; see the restore caveat below.
 
 **Real CREATE is intentionally disabled by default.** The endpoint contract is documented in the DevPanel OpenAPI (`POST /:workspaceId/projects` → `CreateProjectDTO`), but the OpenAPI's `instances[]` typing conflicts with the captured request shape, so a recorded real payload remains authoritative. Before enabling real creation:
 
@@ -126,6 +126,10 @@ Read, backup, restore, and delete use endpoints present in the supplied DevPanel
 Do not infer this contract from field names.
 
 **Activate has the same kind of divergence.** The OpenAPI's `ActivateLAMAppDTO` is an empty stub schema, so `RealDevPanelClient.activateApplication()` sends `ACTIVATE_DEFAULTS` (`src/clients/real-devpanel.ts`), a payload shape captured from a real DevPanel UI activate request. As with create, do not infer this contract from the OpenAPI spec or from field names -- update `ACTIVATE_DEFAULTS` only from a captured real request/response.
+
+**Backup file download.** `GET .../backups/{backupId}/files/{fileId}` (used by `devpanel_get_backup_download_url`) has no response schema in the OpenAPI spec, but the real controller contract has been confirmed (`applications.controller.ts:684-742`): the request must include `?downloadURL=true` or the response is just file-object metadata (no URL). With that param, the response is JSON with a `downloadURL` field (a 1h pre-signed S3/DO/Azure/OVH URL), plus `downloadPgsqlURL` when the application and environment both have PgDB enabled. `RealDevPanelClient.getBackupFile()` sends the query param and `normalizeBackupFile()` reads both fields directly. `fileId` comes from `devpanel_list_backups` -- each backup's raw data carries full `databaseFile`/`filesFile`/`sourcecodeFile` objects, each with an `_id`.
+
+**Restore is disabled -- use phpMyAdmin instead.** `PATCH .../backups/{backupId}/restore` (`RealDevPanelClient.restoreBackup()`) is typed in the OpenAPI spec as a bodyless request returning 200 with no content, but that has never been confirmed against a live backend: create/activate/backup-download were all corrected by capturing a real request from the DevPanel UI, and DevPanel has no UI restore feature to capture one from either. Rather than ship an unverifiable mutation, `devpanel_plan_restore_application` never creates a plan -- it always returns a warning message directing the user to the manual path: download the backup's database dump with `devpanel_get_backup_download_url` (databaseFile `_id` as `fileId`) and import it into the application's database via phpMyAdmin. `RealDevPanelClient.restoreBackup()` and the `RESTORE_APPLICATION` execution-service case are left in place but are unreachable through the MCP tools while this gate is active.
 
 ## Keeping in sync with `devpanel-openapi.json`
 

@@ -1,4 +1,4 @@
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { apiPath } from './api-paths.js';
 import { config } from '../config.js';
@@ -248,6 +248,27 @@ export class RealDevPanelClient implements DevPanelClient {
     }).filter(b => b.id);
   }
 
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    this.requireHierarchy(app);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups/{backupId}/files/{fileId}',
+      { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, backupId, fileId });
+    const raw = await this.request(`${path}?downloadURL=true`);
+    return this.normalizeBackupFile(raw, backupId, fileId);
+  }
+
+  // downloadURL is a pre-signed URL (S3/DO/Azure/OVH, valid 1h); downloadPgsqlURL
+  // is present alongside it when the application and environment both have
+  // isEnablePgDb set (controller source: applications.controller.ts:684-742).
+  private normalizeBackupFile(raw: unknown, backupId: string, fileId: string): BackupFileRef {
+    const r = asRecord(raw);
+    const downloadURL = firstString(r, 'downloadURL');
+    if (!downloadURL) {
+      throw new Error(`Backup file response had no downloadURL (backupId=${backupId}, fileId=${fileId}) -- pass downloadURL=true and confirm the file's status is ready.`);
+    }
+    const downloadPgsqlURL = firstString(r, 'downloadPgsqlURL');
+    return { backupId, fileId, downloadURL, downloadPgsqlURL, raw };
+  }
+
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
     await assertRealCreateReady();
     assertRealCreateInput(input);
@@ -387,6 +408,11 @@ export class RealDevPanelClient implements DevPanelClient {
     return { id: firstString(r, '_id', 'id', 'backupId') ?? 'unknown', applicationId: app.id, createdAt: new Date().toISOString(), type: 'MANUAL', raw };
   }
 
+  // The OpenAPI spec types this as a bodyless PATCH returning 200 with no
+  // content, but that has never been confirmed against a live backend --
+  // DevPanel's UI has no restore feature to capture a real request from, so
+  // (unlike createApplication/activateApplication/getBackupFile) there is no
+  // way to verify this contract until a real restore has been performed.
   async restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown> {
     this.requireHierarchy(app);
     const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups/{backupId}/restore', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, backupId });

@@ -1,4 +1,4 @@
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
@@ -65,6 +65,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
     return this.client().listBackups(app);
+  }
+
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    return this.client().getBackupFile(app, backupId, fileId);
   }
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {

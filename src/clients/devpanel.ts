@@ -1,4 +1,4 @@
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 
 export interface CreateApplicationRequest {
   workspaceId: string;
@@ -38,6 +38,7 @@ export interface DevPanelClient {
   getApplicationActivities(app: ApplicationRef): Promise<unknown>;
   getApplicationLogs(app: ApplicationRef, containerName?: string, pageSize?: number): Promise<unknown>;
   listBackups(app: ApplicationRef): Promise<BackupRef[]>;
+  getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef>;
   createApplication(input: CreateApplicationRequest): Promise<ApplicationRef>;
   createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef>;
   activateApplication(app: ApplicationRef, config: ActivateConfig): Promise<ApplicationRef>;

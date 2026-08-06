@@ -133,6 +133,14 @@ export interface BackupRef {
   raw?: unknown;
 }
 
+export interface BackupFileRef {
+  backupId: string;
+  fileId: string;
+  downloadURL: string;
+  downloadPgsqlURL?: string;
+  raw?: unknown;
+}
+
 export interface PlanStep {
   order: number;
   operation: string;

@@ -154,6 +154,11 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     { ...wsOpt, application: z.string().min(1) },
     async ({ application, workspaceId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.listBackups(app)); });
 
+  defineReadOnlyTool(server, 'devpanel_get_backup_download_url',
+    'Read-only. Get a pre-signed download URL (valid 1h) for a specific file from an application backup. Obtain backupId and fileId from devpanel_list_backups -- each backup\'s raw data has databaseFile, filesFile, and sourcecodeFile objects, each with an _id to pass as fileId. For PgDB-enabled applications the response also includes downloadPgsqlURL.',
+    { ...wsOpt, application: z.string().min(1), backupId: z.string().min(1), fileId: z.string().min(1) },
+    async ({ application, workspaceId, backupId, fileId }) => { const app = await resolver.resolve(application, workspaceId); return text(await dp.getBackupFile(app, backupId, fileId)); });
+
   // ---- Plan creation tools ----
 
   server.registerTool('devpanel_plan_create_application', {
@@ -220,10 +225,17 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
 
   server.registerTool('devpanel_plan_restore_application', {
-    description: 'PLAN ONLY. Create a proposed restore plan for a specific or latest backup. Does not change DevPanel.',
+    description: 'DISABLED. Restoring a backup is not supported via DevPanel MCP or the DevPanel UI. Instead, get the database dump with devpanel_get_backup_download_url and import it into the application\'s database using phpMyAdmin.',
     inputSchema: { ...wsOpt, application: z.string().min(1), backupId: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId, backupId }) => text({ plan: await plans.restorePlan(application, backupId, currentOwnerId()) }));
+  }, async () => text({
+    status: 'unsupported',
+    warning: 'Restoring a backup is not supported via DevPanel MCP -- DevPanel has no UI restore feature either, so this endpoint\'s contract has never been verified against a real backend (see README.md).',
+    manualSteps: [
+      'Call devpanel_get_backup_download_url with the backup\'s databaseFile _id as fileId to get the database dump.',
+      'Import that dump into the application\'s database using phpMyAdmin.',
+    ],
+  }));
 
   server.registerTool('devpanel_plan_delete_application', {
     description: 'PLAN ONLY. Create a proposed deletion plan after reading current application and backup state. Does not change DevPanel.',

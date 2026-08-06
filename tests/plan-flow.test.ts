@@ -386,6 +386,24 @@ describe('discovery methods', () => {
   });
 });
 
+describe('getBackupFile', () => {
+  it('returns an absolute download URL for an existing backup', async () => {
+    const dp = new MockDevPanelClient();
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    const backup = await dp.createBackup(app);
+    const file = await dp.getBackupFile(app, backup.id, 'file_1');
+    expect(file.backupId).toBe(backup.id);
+    expect(file.fileId).toBe('file_1');
+    expect(file.downloadURL).toMatch(/^https:\/\//);
+  });
+
+  it('throws for an unknown backupId', async () => {
+    const dp = new MockDevPanelClient();
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    await expect(dp.getBackupFile(app, 'nonexistent', 'file_1')).rejects.toThrow('Backup not found');
+  });
+});
+
 describe('activate flow', () => {
   it('creates an activate plan and executes it', async () => {
     const dp = new MockDevPanelClient();
