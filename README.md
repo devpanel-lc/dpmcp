@@ -22,6 +22,7 @@ Plan-only:
 - create manual backup
 - restore backup
 - delete application
+- delete project (blocked if the project still has applications -- delete those first)
 
 Execute:
 - `devpanel_approve_and_execute_plan(planId)` -- the only MCP tool allowed to mutate DevPanel

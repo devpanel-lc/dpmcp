@@ -592,6 +592,60 @@ describe('deactivate flow', () => {
   });
 });
 
+describe('delete project flow', () => {
+  it('blocks deleting a project that still has applications', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteProjectPlan('ws_mock_1', 'project_demo_1'))
+      .rejects.toThrow(/still has 1 application\(s\).*Existing Demo.*devpanel_plan_delete_application/s);
+  });
+
+  it('creates a delete project plan and executes it once the project has no applications', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+
+    const plan = await plans.deleteProjectPlan('ws_mock_1', 'project_demo_1');
+    expect(plan.action).toBe('DELETE_PROJECT');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const projects = await dp.listProjects('ws_mock_1');
+    expect(projects.find(p => p.id === 'project_demo_1')).toBeUndefined();
+  });
+
+  it('resolves the project by name as well as id', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+
+    const plan = await plans.deleteProjectPlan('ws_mock_1', 'Demo Project');
+    expect(plan.target.projectId).toBe('project_demo_1');
+  });
+
+  it('rejects when no project matches the query', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteProjectPlan('ws_mock_1', 'nonexistent')).rejects.toThrow('No project matches');
+  });
+});
+
 describe('real client application normalization', () => {
   it('extracts project/workspace ids from scalar or nested refs', async () => {
     const cases = [

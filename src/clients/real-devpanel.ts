@@ -448,6 +448,12 @@ export class RealDevPanelClient implements DevPanelClient {
     return this.request(path, { method: 'DELETE' });
   }
 
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    if (!project.workspaceId || !project.id) throw new Error(`Project ${project.id} lacks workspaceId required by DevPanel nested endpoints`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}', { workspaceId: project.workspaceId, projectId: project.id });
+    return this.request(path, { method: 'DELETE' });
+  }
+
   private requireHierarchy(app: ApplicationRef): void {
     if (!app.workspaceId || !app.projectId) throw new Error(`Application ${app.id} lacks workspaceId/projectId required by DevPanel nested endpoints`);
   }

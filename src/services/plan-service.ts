@@ -137,6 +137,39 @@ export class PlanService {
     });
   }
 
+  async deleteProjectPlan(workspaceId: string, project: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const projects = await this.dp.listProjects(workspaceId);
+    const exact = projects.find(p => p.id === project);
+    const matches = exact ? [exact] : projects.filter(p => (p.name ?? '').toLowerCase().includes(project.toLowerCase()));
+    if (matches.length === 0) throw new Error(`No project matches "${project}" in workspace ${workspaceId}`);
+    if (matches.length > 1) {
+      const choices = matches.slice(0, 10).map(p => `${p.name} (${p.id})`).join(', ');
+      throw new Error(`Project query is ambiguous: "${project}" in workspace ${workspaceId}. Matches: ${choices}`);
+    }
+    const proj = matches[0];
+    const apps = await this.dp.listProjectApplications(workspaceId, proj.id);
+    if (apps.length > 0) {
+      const names = apps.map(a => `${a.name ?? a.hostname ?? a.id} (${a.id})`).join(', ');
+      throw new Error(
+        `Project ${proj.name} (${proj.id}) still has ${apps.length} application(s): ${names}. ` +
+        'Delete them first (devpanel_plan_delete_application + devpanel_approve_and_execute_plan for each), then retry devpanel_plan_delete_project.'
+      );
+    }
+    return this.createPlan({
+      action: 'DELETE_PROJECT', risk: 'HIGH', ownerId, summary: `Delete project ${proj.name} (${proj.id})`,
+      target: { projectId: proj.id, projectName: proj.name, workspaceId },
+      proposedInput: { projectId: proj.id, workspaceId },
+      steps: [
+        step(1, 'REVALIDATE', 'Verify the project still has zero applications', false),
+        step(2, 'DELETE_PROJECT', 'Delete the DevPanel project', true),
+        step(3, 'VERIFY_DELETED', 'Confirm the project no longer appears in devpanel_list_projects', false),
+      ],
+      preconditions: { projectId: proj.id, workspaceId },
+      expectedResult: `Project ${proj.name} no longer exists.`,
+      rollback: 'No undo; project deletion is permanent.',
+    });
+  }
+
   private async createPlan(input: { action: PlanAction; risk: RiskLevel; ownerId: string; summary: string; target: Record<string, unknown>; proposedInput: Record<string, unknown>; steps: PlanStep[]; preconditions: Preconditions; expectedResult: string; rollback: string; }): Promise<ChangePlan> {
     const now = new Date();
     const base = {

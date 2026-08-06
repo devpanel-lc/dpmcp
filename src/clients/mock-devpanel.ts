@@ -200,4 +200,11 @@ export class MockDevPanelClient implements DevPanelClient {
     if (!this.apps.delete(app.id)) throw new Error(`Application not found: ${app.id}`);
     return { status: 'DELETED', applicationId: app.id };
   }
+
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    const idx = this.projects.findIndex(p => p.id === project.id && p.workspaceId === project.workspaceId);
+    if (idx === -1) throw new Error(`Project not found: ${project.id}`);
+    this.projects.splice(idx, 1);
+    return { status: 'DELETED', projectId: project.id };
+  }
 }

@@ -46,6 +46,7 @@ export interface DevPanelClient {
   createBackup(app: ApplicationRef): Promise<BackupRef>;
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;
+  deleteProject(project: ProjectRef): Promise<unknown>;
   listGitOwners(provider?: string): Promise<GitOwnerRef[]>;
   listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]>;
   listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]>;

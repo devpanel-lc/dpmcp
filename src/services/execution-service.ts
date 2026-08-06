@@ -32,6 +32,13 @@ export class ExecutionService {
         throw new Error('Plan is stale: the target environment no longer exists. Create a new plan.');
       }
     }
+    if (plan.action === 'DELETE_PROJECT' && plan.preconditions.projectId) {
+      const apps = await this.dp.listProjectApplications(plan.preconditions.workspaceId ?? '', plan.preconditions.projectId);
+      if (apps.length > 0) {
+        await this.store.setStatus(plan.id, 'STALE');
+        throw new Error(`Plan is stale: the project now has ${apps.length} application(s). Delete them first, then create a new delete-project plan.`);
+      }
+    }
     if (!plan.preconditions.applicationId) return;
     const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
     if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
@@ -89,6 +96,13 @@ export class ExecutionService {
       case 'DELETE_APPLICATION': {
         const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.deleteApplication(app);
+      }
+      case 'DELETE_PROJECT': {
+        return this.dp.deleteProject({
+          id: plan.preconditions.projectId ?? '',
+          workspaceId: plan.preconditions.workspaceId ?? '',
+          name: '',
+        });
       }
     }
   }

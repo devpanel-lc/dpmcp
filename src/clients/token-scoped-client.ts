@@ -99,6 +99,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
     return this.client().deleteApplication(app);
   }
 
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    return this.client().deleteProject(project);
+  }
+
   async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {
     return this.client().listGitOwners(provider);
   }
