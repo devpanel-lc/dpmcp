@@ -324,6 +324,29 @@ export class RealDevPanelClient implements DevPanelClient {
     return last;
   }
 
+  // DeactivateLAMAppDTO is an empty schema in the OpenAPI spec (like ActivateLAMAppDTO
+  // was before ACTIVATE_DEFAULTS was captured from a real UI request) -- no real
+  // deactivate request has been captured, so this sends an empty body as a best guess.
+  // Update this once a real request/response is captured -- see README.md.
+  async deactivateApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const raw = await this.request(
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/deactivate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
+      { method: 'PATCH', body: JSON.stringify({}) },
+    );
+    let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: app.workspaceId, projectId: app.projectId });
+    // Mirrors activateApplication()'s polling: deactivation is presumably also async.
+    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'UNDEPLOY_APPLICATION_SUCCESS'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
+      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
+      const items = extractItems(listRaw, 'applications', 'data', 'items');
+      const current = items.find(item => firstString(asRecord(item), '_id', 'id', 'applicationId') === app.id);
+      if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    }
+    return last;
+  }
+
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {
     const qs = new URLSearchParams({ gitProvider: provider.toUpperCase(), isUsePersonalToken: '1' });
     const raw = await this.request(`${apiPath('/api/v2/users/git-owners')}?${qs}`);

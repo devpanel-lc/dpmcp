@@ -510,6 +510,88 @@ describe('activate flow', () => {
   });
 });
 
+describe('deactivate flow', () => {
+  it('creates a deactivate plan and executes it', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.deactivatePlan('app_demo_1');
+
+    expect(plan.action).toBe('DEACTIVATE_APPLICATION');
+    expect(plan.steps.length).toBeGreaterThan(0);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.status).toBe('UNDEPLOY_APPLICATION_SUCCESS');
+  });
+
+  it('rejects deactivate when app is already undeployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deactivatePlan('app_demo_1')).rejects.toThrow('already undeployed (UNDEPLOY_APPLICATION_SUCCESS); no deactivation is needed');
+  });
+
+  it('deactivatePlan scopes resolution to the given workspace', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.deactivatePlan('app_demo_1', 'local', 'ws_mock_1');
+    expect(plan.action).toBe('DEACTIVATE_APPLICATION');
+
+    await expect(plans.deactivatePlan('app_demo_1', 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+  });
+
+  it('real client deactivateApplication polls until UNDEPLOY_APPLICATION_SUCCESS', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    const appJson = (status: string) => ({ _id: 'app_1', status, project: { _id: 'p_1', workspace: { _id: 'ws_1' } } });
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith('/deactivate')) {
+        return { ok: true, text: async () => JSON.stringify(appJson('DEACTIVATING')) };
+      }
+      polls += 1;
+      return { ok: true, text: async () => JSON.stringify({ items: [appJson(polls === 1 ? 'DEACTIVATING' : 'UNDEPLOY_APPLICATION_SUCCESS')] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const promise = client.deactivateApplication({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' });
+      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result.status).toBe('UNDEPLOY_APPLICATION_SUCCESS');
+      expect(polls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('real client application normalization', () => {
   it('extracts project/workspace ids from scalar or nested refs', async () => {
     const cases = [

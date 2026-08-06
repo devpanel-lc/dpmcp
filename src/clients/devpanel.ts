@@ -42,6 +42,7 @@ export interface DevPanelClient {
   createApplication(input: CreateApplicationRequest): Promise<ApplicationRef>;
   createWorkspace(input: CreateWorkspaceRequest): Promise<WorkspaceRef>;
   activateApplication(app: ApplicationRef, config: ActivateConfig): Promise<ApplicationRef>;
+  deactivateApplication(app: ApplicationRef): Promise<ApplicationRef>;
   createBackup(app: ApplicationRef): Promise<BackupRef>;
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;

@@ -168,6 +168,14 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(existing);
   }
 
+  async deactivateApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.status = 'UNDEPLOY_APPLICATION_SUCCESS';
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     await this.getApplication(app);
     const backup: BackupRef = {

@@ -88,7 +88,31 @@ export class PlanService {
       ],
       preconditions: snapshot(app),
       expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
-      rollback: 'Undeploy via the DevPanel deactivate endpoint (UI or API); a devpanel_deactivate_application MCP tool is not yet implemented.'
+      rollback: 'Undeploy via devpanel_plan_deactivate_application if rollback is required.'
+    });
+  }
+
+  async deactivatePlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
+    if (app.status !== 'DEPLOY_APPLICATION_SUCCESS') {
+      if (app.status === 'UNDEPLOY_APPLICATION_SUCCESS') {
+        throw new Error(`Application ${app.name ?? app.id} is already undeployed (UNDEPLOY_APPLICATION_SUCCESS); no deactivation is needed. Verify its status with devpanel_list_applications or devpanel_get_application.`);
+      }
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Deactivation requires status DEPLOY_APPLICATION_SUCCESS; check the current status with devpanel_get_application before retrying.`);
+    }
+    return this.createPlan({
+      action: 'DEACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
+      summary: `Deactivate (undeploy/pause) application ${app.name ?? app.id} from K8s`,
+      target: appSummary(app),
+      proposedInput: appSummary(app),
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in DEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, 'DEACTIVATE_APPLICATION', 'Undeploy the application from Kubernetes via PATCH /deactivate', true),
+        step(3, 'VERIFY_DEACTIVATED', 'Poll application status until it reaches UNDEPLOY_APPLICATION_SUCCESS or fails', false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `Application ${app.name ?? app.id} is undeployed with status UNDEPLOY_APPLICATION_SUCCESS. It no longer serves traffic; storage/data is preserved.`,
+      rollback: 'Re-activate via devpanel_plan_activate_application if rollback is required.'
     });
   }
 

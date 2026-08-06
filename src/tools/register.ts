@@ -218,6 +218,15 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
     return text({ plan: await plans.activatePlan(args.application, activateConfig, currentOwnerId(), args.workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' });
   });
 
+  server.registerTool('devpanel_plan_deactivate_application', {
+    description: 'PLAN ONLY. Create an immutable proposed plan to deactivate (undeploy/pause, stop serving traffic) an existing DevPanel application. The application must be in DEPLOY_APPLICATION_SUCCESS status; if it is already in UNDEPLOY_APPLICATION_SUCCESS status, no deactivation is needed. Storage/data is preserved -- use devpanel_plan_activate_application to bring it back.',
+    inputSchema: {
+      workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
+      application: z.string().min(1).describe('Application ID, name, or search query'),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ application, workspaceId }) => text({ plan: await plans.deactivatePlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
     inputSchema: { ...wsOpt, application: z.string().min(1) },

@@ -17,6 +17,8 @@ Read:
 
 Plan-only:
 - create application
+- activate application (deploy to K8s)
+- deactivate application (undeploy/pause)
 - create manual backup
 - restore backup
 - delete application
@@ -126,6 +128,8 @@ Read, backup, restore, and delete use endpoints present in the supplied DevPanel
 Do not infer this contract from field names.
 
 **Activate has the same kind of divergence.** The OpenAPI's `ActivateLAMAppDTO` is an empty stub schema, so `RealDevPanelClient.activateApplication()` sends `ACTIVATE_DEFAULTS` (`src/clients/real-devpanel.ts`), a payload shape captured from a real DevPanel UI activate request. As with create, do not infer this contract from the OpenAPI spec or from field names -- update `ACTIVATE_DEFAULTS` only from a captured real request/response.
+
+**Deactivate is unverified, unlike activate.** `PATCH .../applications/{applicationId}/deactivate` (`ApplicationsController_deactivateApplication`) is a real, documented sibling of the activate endpoint, and `RealDevPanelClient.deactivateApplication()` mirrors `activateApplication()`'s PATCH-then-poll-until-status pattern (polling for `UNDEPLOY_APPLICATION_SUCCESS` instead of `DEPLOY_APPLICATION_SUCCESS`). But `DeactivateLAMAppDTO` is an empty stub schema like `ActivateLAMAppDTO` was, and no real deactivate request has been captured from the DevPanel UI yet, so the request body is currently an unverified guess (`{}`). Capture a real request/response (same Network-tab workflow as create/activate) before relying on this in real mode, and update the body accordingly.
 
 **Backup file download.** `GET .../backups/{backupId}/files/{fileId}` (used by `devpanel_get_backup_download_url`) has no response schema in the OpenAPI spec, but the real controller contract has been confirmed (`applications.controller.ts:684-742`): the request must include `?downloadURL=true` or the response is just file-object metadata (no URL). With that param, the response is JSON with a `downloadURL` field (a 1h pre-signed S3/DO/Azure/OVH URL), plus `downloadPgsqlURL` when the application and environment both have PgDB enabled. `RealDevPanelClient.getBackupFile()` sends the query param and `normalizeBackupFile()` reads both fields directly. `fileId` comes from `devpanel_list_backups` -- each backup's raw data carries full `databaseFile`/`filesFile`/`sourcecodeFile` objects, each with an `_id`.
 

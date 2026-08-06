@@ -74,6 +74,10 @@ export class ExecutionService {
         const activateConfig = validateActivateConfig(rawConfig);
         return this.dp.activateApplication(app, activateConfig);
       }
+      case 'DEACTIVATE_APPLICATION': {
+        const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
+        return this.dp.deactivateApplication(app);
+      }
       case 'BACKUP_APPLICATION': {
         const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
         return this.dp.createBackup(app);
