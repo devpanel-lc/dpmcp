@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 import { apiPath } from './api-paths.js';
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
-import { getAccessToken, getLoginUrl, refreshNow, clearSession } from '../auth/session.js';
+import { getAccessToken, getLoginUrl, getOwnerId, refreshNow, clearSession } from '../auth/session.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 150;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
@@ -32,9 +33,11 @@ const ACTIVATE_DEFAULTS = {
 // a partial/delta body. buildUpdateAppPayload() re-reads the application first and
 // extracts as many of these fields as possible from its raw GET response; the values
 // below are only the last-resort fallback for fields presumed safe to default (fixed
-// platform conventions). Fields where a wrong guess could silently downgrade a real
-// app's resources (container image, capacity/capacityLimit, storage, groupType) are
-// NOT defaulted from here -- buildUpdateAppPayload() throws if they can't be read live.
+// platform conventions). Fields where a wrong guess could silently downgrade real
+// resources or clobber unrelated state (container image, capacity/capacityLimit,
+// storage, groupType, isEnablePMA, isEnableEditor -- the latter two because toggling
+// one must not silently flip the other back to a guessed default) are NOT defaulted
+// from here -- buildUpdateAppPayload() throws if they can't be read live.
 const UPDATE_APP_SAFE_DEFAULTS = {
   appRoot: '/var/www/html',
   webRoot: '/var/www/html/web',
@@ -95,6 +98,18 @@ export class RealDevPanelClient implements DevPanelClient {
     private readonly ssoMode: boolean = false,
     private readonly sourceHint: string = 'DP_ACCESS_TOKEN in .env',
   ) { }
+
+  // sso mode: identity is the Cognito sub (single shared session, as before).
+  // off/token mode: identity is derived from the DevPanel access token itself
+  // -- a one-way hash, never the raw token, so it's safe to echo back in
+  // PLAN_OWNER_MISMATCH error payloads while still being stable per-credential
+  // (same token -> same identity; different tokens, e.g. different callers in
+  // token mode, -> different identities, so plan ownership actually isolates
+  // different users instead of collapsing everyone onto 'local').
+  getCallerIdentity(): string {
+    if (this.ssoMode) return getOwnerId();
+    return `token:${createHash('sha256').update(this.accessToken).digest('hex').slice(0, 16)}`;
+  }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     return this.requestWithToken(path, init, this.accessToken, false);
@@ -342,13 +357,22 @@ export class RealDevPanelClient implements DevPanelClient {
       apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/activate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
       { method: 'PATCH', body: JSON.stringify(body) },
     );
-    let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    const initial = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    // Activation is async: the endpoint returns immediately while a background task deploys to
+    // K8s. Poll until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded). On timeout,
+    // return the last observed status so slow deployments still surface as SUCCEEDED plans for
+    // the agent to verify with devpanel_list_applications.
+    return this.pollUntilStatus(app, 'DEPLOY_APPLICATION_SUCCESS', initial);
+  }
+
+  // Shared by activateApplication/deactivateApplication: both PATCH endpoints return
+  // immediately while a background task changes the application's status; poll the
+  // list endpoint (bounded) until it reaches targetStatus, returning the last observed
+  // state on timeout rather than throwing.
+  private async pollUntilStatus(app: ApplicationRef, targetStatus: string, initial: ApplicationRef): Promise<ApplicationRef> {
+    let last = initial;
     const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: app.workspaceId, projectId: app.projectId });
-    // Activation is async: the endpoint returns immediately while a background task deploys to K8s.
-    // Poll the list endpoint until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded).
-    // On timeout, return the last observed status so slow deployments still surface as SUCCEEDED
-    // plans for the agent to verify with devpanel_list_applications.
-    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'DEPLOY_APPLICATION_SUCCESS'; attempt++) {
+    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== targetStatus; attempt++) {
       await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
       const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
       const items = extractItems(listRaw, 'applications', 'data', 'items');
@@ -380,8 +404,11 @@ export class RealDevPanelClient implements DevPanelClient {
   }
 
   private async buildUpdateAppPayload(app: ApplicationRef): Promise<Record<string, unknown>> {
-    const current = await this.getApplication(app);
-    const r = asRecord(current.raw);
+    // Callers that already did a fresh getApplication() (execution-service.ts's
+    // ENABLE_EDITOR/DISABLE_EDITOR/ENABLE_PMA/DISABLE_PMA cases) pass its .raw
+    // straight through, avoiding a second live round-trip for data we already have.
+    const raw = app.raw ?? (await this.getApplication(app)).raw;
+    const r = asRecord(raw);
     const requireString = (key: string): string => {
       const v = firstString(r, key);
       if (v === undefined) {
@@ -404,6 +431,17 @@ export class RealDevPanelClient implements DevPanelClient {
       }
       return v;
     };
+    const requireBoolean = (key: string): boolean => {
+      const v = firstBoolean(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
     return {
       appRoot: firstString(r, 'appRoot') ?? UPDATE_APP_SAFE_DEFAULTS.appRoot,
       webRoot: firstString(r, 'webRoot') ?? UPDATE_APP_SAFE_DEFAULTS.webRoot,
@@ -415,9 +453,9 @@ export class RealDevPanelClient implements DevPanelClient {
       capacity: requireString('capacity'),
       capacityLimit: requireString('capacityLimit'),
       storage: requireNumber('storage'),
-      isEnablePMA: firstBoolean(r, 'isEnablePMA') ?? false,
+      isEnablePMA: requireBoolean('isEnablePMA'),
       isEnablePPA: firstBoolean(r, 'isEnablePPA') ?? UPDATE_APP_SAFE_DEFAULTS.isEnablePPA,
-      isEnableEditor: firstBoolean(r, 'isEnableEditor') ?? false,
+      isEnableEditor: requireBoolean('isEnableEditor'),
       filePermissionLevel: firstString(r, 'filePermissionLevel') ?? UPDATE_APP_SAFE_DEFAULTS.filePermissionLevel,
       isEnable: firstBoolean(r, 'isEnable') ?? UPDATE_APP_SAFE_DEFAULTS.isEnable,
       isEnableBasicAuth: firstBoolean(r, 'isEnableBasicAuth') ?? UPDATE_APP_SAFE_DEFAULTS.isEnableBasicAuth,
@@ -435,17 +473,9 @@ export class RealDevPanelClient implements DevPanelClient {
       apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/deactivate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
       { method: 'PATCH', body: JSON.stringify({}) },
     );
-    let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
-    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: app.workspaceId, projectId: app.projectId });
+    const initial = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
     // Mirrors activateApplication()'s polling: deactivation is presumably also async.
-    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'UNDEPLOY_APPLICATION_SUCCESS'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
-      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
-      const items = extractItems(listRaw, 'applications', 'data', 'items');
-      const current = items.find(item => firstString(asRecord(item), '_id', 'id', 'applicationId') === app.id);
-      if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
-    }
-    return last;
+    return this.pollUntilStatus(app, 'UNDEPLOY_APPLICATION_SUCCESS', initial);
   }
 
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {

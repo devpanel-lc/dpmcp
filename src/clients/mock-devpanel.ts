@@ -3,6 +3,10 @@ import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
+  getCallerIdentity(): string {
+    return 'local';
+  }
+
   private apps = new Map<string, ApplicationRef>();
   private backups = new Map<string, BackupRef[]>();
   private workspaces: WorkspaceRef[] = [

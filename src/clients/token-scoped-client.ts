@@ -16,6 +16,10 @@ export function currentOwnerId(): string {
 export class TokenScopedDevPanelClient implements DevPanelClient {
   private readonly mockClient = new MockDevPanelClient();
 
+  getCallerIdentity(): string {
+    return this.client().getCallerIdentity();
+  }
+
   private client(): DevPanelClient {
     if (config.mode === 'mock') return this.mockClient;
     const token = getAccessToken();

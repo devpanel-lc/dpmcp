@@ -9,7 +9,6 @@ import { ApprovalService } from '../approval/approval-service.js';
 import type { ElicitFn } from '../approval/providers/form-elicitation.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
-import { currentOwnerId } from '../clients/token-scoped-client.js';
 import { defineReadOnlyTool } from './read-only-tool.js';
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
@@ -24,6 +23,13 @@ function errorText(errorCode: ErrorCode, message: string, details?: Record<strin
 const wsOpt = {
   workspaceId: z.string().default(config.defaultWorkspaceId)
     .transform(v => v || config.defaultWorkspaceId),
+};
+
+/** Shared by tools that resolve a single application by id/name/search (activate,
+ *  deactivate, and the code-server/phpMyAdmin toggle tools). */
+const applicationLookupSchema = {
+  workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
+  application: z.string().min(1).describe('Application ID, name, or search query'),
 };
 
 /**
@@ -58,6 +64,11 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   const plans = new PlanService(dp, store);
   const executor = new ExecutionService(dp, store);
   const resolver = new ApplicationResolver(dp);
+  // Per-dp-instance identity, not a global session singleton: in token auth
+  // mode `dp` is scoped to this session's own forwarded bearer, so different
+  // callers get different owner ids and can't approve/execute each other's
+  // plans. See DevPanelClient.getCallerIdentity().
+  const currentOwnerId = () => dp.getCallerIdentity();
 
   const elicitationFn = withElicitationGuard(server.server.elicitInput.bind(server.server));
   const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
@@ -176,8 +187,7 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   server.registerTool('devpanel_plan_activate_application', {
     description: 'PLAN ONLY. Create an immutable proposed plan to activate (deploy to K8s) an existing DevPanel application. The application must be in UNDEPLOY_APPLICATION_SUCCESS status; if it is already in DEPLOY_APPLICATION_SUCCESS status, no activation is needed.',
     inputSchema: {
-      workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
-      application: z.string().min(1).describe('Application ID, name, or search query'),
+      ...applicationLookupSchema,
       groupType: z.enum(['spot', 'on-demand']).default('on-demand'),
       capacity: z.string().default('micro'),
       capacityLimit: z.string().optional(),
@@ -220,41 +230,34 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   server.registerTool('devpanel_plan_deactivate_application', {
     description: 'PLAN ONLY. Create an immutable proposed plan to deactivate (undeploy/pause, stop serving traffic) an existing DevPanel application. The application must be in DEPLOY_APPLICATION_SUCCESS status; if it is already in UNDEPLOY_APPLICATION_SUCCESS status, no deactivation is needed. Storage/data is preserved -- use devpanel_plan_activate_application to bring it back.',
-    inputSchema: {
-      workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
-      application: z.string().min(1).describe('Application ID, name, or search query'),
-    },
+    inputSchema: applicationLookupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ application, workspaceId }) => text({ plan: await plans.deactivatePlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
-  const toggleFeatureInputSchema = {
-    workspaceId: z.string().optional().describe('Restrict application lookup to this workspace'),
-    application: z.string().min(1).describe('Application ID, name, or search query'),
-  };
   const toggleFeatureAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   const REAL_MODE_CAVEAT = 'Uses a confirmed real DevPanel request (PATCH .../applications/{id}/update with the app\'s full config, one field flipped). Other current settings (container image, capacity, storage) are read live and carried over unchanged; the execute step fails with a clear error if any of those cannot be read from DevPanel rather than guessing them.';
 
   server.registerTool('devpanel_plan_enable_code_server', {
     description: `PLAN ONLY. Create a proposed plan to enable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
-    inputSchema: toggleFeatureInputSchema,
+    inputSchema: applicationLookupSchema,
     annotations: toggleFeatureAnnotations,
   }, async ({ application, workspaceId }) => text({ plan: await plans.enableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_disable_code_server', {
     description: `PLAN ONLY. Create a proposed plan to disable the in-browser code server (VSCode) on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
-    inputSchema: toggleFeatureInputSchema,
+    inputSchema: applicationLookupSchema,
     annotations: toggleFeatureAnnotations,
   }, async ({ application, workspaceId }) => text({ plan: await plans.disableEditorPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_enable_phpmyadmin', {
     description: `PLAN ONLY. Create a proposed plan to enable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
-    inputSchema: toggleFeatureInputSchema,
+    inputSchema: applicationLookupSchema,
     annotations: toggleFeatureAnnotations,
   }, async ({ application, workspaceId }) => text({ plan: await plans.enablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_disable_phpmyadmin', {
     description: `PLAN ONLY. Create a proposed plan to disable phpMyAdmin on a deployed application. Requires status DEPLOY_APPLICATION_SUCCESS. ${REAL_MODE_CAVEAT}`,
-    inputSchema: toggleFeatureInputSchema,
+    inputSchema: applicationLookupSchema,
     annotations: toggleFeatureAnnotations,
   }, async ({ application, workspaceId }) => text({ plan: await plans.disablePmaPlan(application, currentOwnerId(), workspaceId), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 

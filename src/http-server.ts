@@ -98,6 +98,12 @@ function isInitializeRequest(body: unknown): boolean {
  */
 function handleMcpRequest(dpFactory: DevPanelClientFactory, store: PlanStore): RequestHandler {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  // dpFactory(token) only actually varies by token in 'token' auth mode (each
+  // session forwards its own DevPanel bearer); every other mode ignores the
+  // argument and returns the same cached client. Build one shared McpServer
+  // up front and reuse it across sessions there, instead of paying the full
+  // registerTools() cost (~25 tool registrations) on every new session.
+  const sharedServer = config.authMode === 'token' ? undefined : buildServer(dpFactory(), store);
   return async (req: Request, res: Response) => {
     const headerValue = req.headers['mcp-session-id'];
     const sessionId = typeof headerValue === 'string' && headerValue.length > 0 ? headerValue : undefined;

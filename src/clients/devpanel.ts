@@ -28,6 +28,13 @@ export interface CreateWorkspaceRequest {
 export type DevPanelClientFactory = (bearerToken?: string) => DevPanelClient;
 
 export interface DevPanelClient {
+  /**
+   * A stable, per-credential owner identity used to bind change plans to the
+   * caller that created them. MUST NOT leak the underlying credential itself
+   * (plan-owner-mismatch errors echo this value back to whichever caller
+   * triggered the mismatch).
+   */
+  getCallerIdentity(): string;
   listWorkspaces(): Promise<WorkspaceRef[]>;
   listEnvironments(search?: string): Promise<EnvironmentRef[]>;
   listProjects(workspaceId: string): Promise<ProjectRef[]>;

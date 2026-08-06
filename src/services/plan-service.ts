@@ -133,7 +133,12 @@ export class PlanService {
   }
 
   private async toggleFeaturePlan(application: string, ownerId: string, workspaceId: string | undefined, feature: 'EDITOR' | 'PMA', enabled: boolean): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application, workspaceId);
+    const resolved = await this.resolver.resolve(application, workspaceId);
+    // resolver.resolve() goes through listApplications(), whose raw item shape for
+    // isEnableEditor/isEnablePMA is unconfirmed -- re-fetch via getApplication()'s
+    // single-app GET, which the README confirms exposes these fields, so the
+    // "already enabled/disabled" guard below actually works in real mode.
+    const app = await this.dp.getApplication(resolved);
     if (app.status !== 'DEPLOY_APPLICATION_SUCCESS') {
       throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Code server/phpMyAdmin can only be toggled on a deployed application (status DEPLOY_APPLICATION_SUCCESS); activate it first with devpanel_plan_activate_application.`);
     }

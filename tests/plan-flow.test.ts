@@ -321,6 +321,22 @@ describe('session-scoped client and owner identity', () => {
     expect(idA).not.toBe(currentOwnerId());
   });
 
+  it('RealDevPanelClient.getCallerIdentity() isolates different bearer tokens from each other (token mode)', () => {
+    const alice = new RealDevPanelClient('alice-devpanel-token', false, 'test');
+    const bob = new RealDevPanelClient('bob-devpanel-token', false, 'test');
+    const aliceAgain = new RealDevPanelClient('alice-devpanel-token', false, 'test');
+
+    expect(alice.getCallerIdentity()).not.toBe(bob.getCallerIdentity());
+    expect(alice.getCallerIdentity()).toBe(aliceAgain.getCallerIdentity());
+    expect(alice.getCallerIdentity()).not.toContain('alice-devpanel-token');
+  });
+
+  it('RealDevPanelClient.getCallerIdentity() uses the Cognito sub in sso mode', () => {
+    saveSession(testSession);
+    const client = new RealDevPanelClient('sso-access-token', true, 'test');
+    expect(client.getCallerIdentity()).toBe(testSession.sub);
+  });
+
   it('TokenScopedDevPanelClient falls back to mock in mock mode', async () => {
     const client = new TokenScopedDevPanelClient();
     const apps = await client.listApplications('ws_mock_1');
@@ -760,6 +776,56 @@ describe('editor/PMA toggle flow', () => {
       const client = new RealDevPanelClient('test-token');
       await expect(client.setPmaEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true))
         .rejects.toThrow('current "containerImage" could not be read');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('real client setEditorEnabled throws rather than silently disabling PMA when isEnablePMA cannot be read live', async () => {
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      containerImage: 'devpanel/php:8.4-base', groupType: 'on-demand', capacity: 'micro',
+      capacityLimit: 'small_1', storage: 5, isEnableEditor: false,
+      // isEnablePMA intentionally omitted -- must NOT silently default to false
+    };
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify(appJson) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      await expect(client.setEditorEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true))
+        .rejects.toThrow('current "isEnablePMA" could not be read');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('detects "already enabled" via getApplication(), not the unconfirmed list-endpoint shape', async () => {
+    // The list endpoint (used by ApplicationResolver) omits isEnableEditor/isEnablePMA
+    // here, mirroring the real, unconfirmed response shape; only the single-app GET
+    // (used explicitly by toggleFeaturePlan) includes them.
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/applications/app_1')) {
+        return {
+          ok: true, text: async () => JSON.stringify({
+            _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+            project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+            isEnableEditor: true, isEnablePMA: false,
+          }),
+        };
+      }
+      return {
+        ok: true, text: async () => JSON.stringify({
+          applications: [{ _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS', project: { _id: 'p_1', workspace: { _id: 'ws_1' } } }],
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const dp = new RealDevPanelClient('test-token');
+      const store = new InMemoryPlanStore();
+      const plans = new PlanService(dp, store);
+      await expect(plans.enableEditorPlan('app_1', 'local', 'ws_1')).rejects.toThrow('already enabled');
     } finally {
       vi.unstubAllGlobals();
     }
