@@ -35,6 +35,8 @@ export interface DevPanelClient {
    * triggered the mismatch).
    */
   getCallerIdentity(): string;
+  /** Read-only. The DevPanel profile of whichever bearer/session this client is scoped to. */
+  whoami(): Promise<unknown>;
   listWorkspaces(): Promise<WorkspaceRef[]>;
   listEnvironments(search?: string): Promise<EnvironmentRef[]>;
   listProjects(workspaceId: string): Promise<ProjectRef[]>;
@@ -56,6 +58,7 @@ export interface DevPanelClient {
   restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown>;
   deleteApplication(app: ApplicationRef): Promise<unknown>;
   deleteProject(project: ProjectRef): Promise<unknown>;
+  deleteWorkspace(workspace: WorkspaceRef): Promise<unknown>;
   listGitOwners(provider?: string): Promise<GitOwnerRef[]>;
   listRepositories(owner?: string, provider?: string): Promise<GitRepoRef[]>;
   listRepositoryBranches(owner: string, repoName: string, repoId: string, provider?: string): Promise<GitBranchRef[]>;

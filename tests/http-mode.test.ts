@@ -345,6 +345,52 @@ describe('http transport server', () => {
     expect(reuse.status).toBe(200);
   });
 
+  it('a session created via POST is reachable via DELETE (shared session map across verbs)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const init = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${tokens.access}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    // Before the fix, POST/GET/DELETE each had their own private sessions Map,
+    // so DELETE (issued by a different app.delete('/mcp', ...) handler
+    // instance) would never find a session created via POST -- 404.
+    const del = await fetch(`${ctx.base}/mcp`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${tokens.access}`, 'mcp-session-id': sessionId! },
+    });
+    expect(del.status).not.toBe(404);
+  });
+
+  it('rejects a POST to /mcp with a non-JSON content-type (415)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const res = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tokens.access}`, 'content-type': 'text/plain' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(415);
+  });
+
   it('accepts the static bearer token in off mode', async () => {
     config.mcpBearerToken = 'test-static-token';
     ctx = await startApp();

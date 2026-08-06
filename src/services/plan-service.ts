@@ -165,8 +165,8 @@ export class PlanService {
     });
   }
 
-  async backupPlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
+  async backupPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
     return this.createPlan({
       action: 'BACKUP_APPLICATION', risk: 'LOW', ownerId, summary: `Create a manual backup of ${app.name ?? app.id}`,
       target: appSummary(app), proposedInput: { applicationId: app.id },
@@ -175,8 +175,8 @@ export class PlanService {
     });
   }
 
-  async deletePlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
+  async deletePlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
     const backups = await this.dp.listBackups(app);
     return this.createPlan({
       action: 'DELETE_APPLICATION', risk: 'HIGH', ownerId, summary: `Delete ${app.name ?? app.id}`,
@@ -188,34 +188,82 @@ export class PlanService {
 
   async deleteProjectPlan(workspaceId: string, project: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
     const projects = await this.dp.listProjects(workspaceId);
-    const exact = projects.find(p => p.id === project);
-    const matches = exact ? [exact] : projects.filter(p => (p.name ?? '').toLowerCase().includes(project.toLowerCase()));
-    if (matches.length === 0) throw new Error(`No project matches "${project}" in workspace ${workspaceId}`);
-    if (matches.length > 1) {
-      const choices = matches.slice(0, 10).map(p => `${p.name} (${p.id})`).join(', ');
-      throw new Error(`Project query is ambiguous: "${project}" in workspace ${workspaceId}. Matches: ${choices}`);
-    }
-    const proj = matches[0];
+    const proj = this.resolveOneOrThrow(projects, project, 'Project', ` in workspace ${workspaceId}`);
     const apps = await this.dp.listProjectApplications(workspaceId, proj.id);
-    if (apps.length > 0) {
-      const names = apps.map(a => `${a.name ?? a.hostname ?? a.id} (${a.id})`).join(', ');
-      throw new Error(
-        `Project ${proj.name} (${proj.id}) still has ${apps.length} application(s): ${names}. ` +
-        'Delete them first (devpanel_plan_delete_application + devpanel_approve_and_execute_plan for each), then retry devpanel_plan_delete_project.'
-      );
-    }
-    return this.createPlan({
-      action: 'DELETE_PROJECT', risk: 'HIGH', ownerId, summary: `Delete project ${proj.name} (${proj.id})`,
+    return this.deleteHierarchyPlan({
+      kind: 'project', action: 'DELETE_PROJECT', ownerId,
+      entity: proj, children: apps, childKind: 'application',
+      describeChild: a => `${a.name ?? a.hostname ?? a.id} (${a.id})`,
+      childToolHint: 'Delete them first (devpanel_plan_delete_application + devpanel_approve_and_execute_plan for each), then retry devpanel_plan_delete_project.',
       target: { projectId: proj.id, projectName: proj.name, workspaceId },
       proposedInput: { projectId: proj.id, workspaceId },
-      steps: [
-        step(1, 'REVALIDATE', 'Verify the project still has zero applications', false),
-        step(2, 'DELETE_PROJECT', 'Delete the DevPanel project', true),
-        step(3, 'VERIFY_DELETED', 'Confirm the project no longer appears in devpanel_list_projects', false),
-      ],
       preconditions: { projectId: proj.id, workspaceId },
-      expectedResult: `Project ${proj.name} no longer exists.`,
-      rollback: 'No undo; project deletion is permanent.',
+    });
+  }
+
+  async deleteWorkspacePlan(workspace: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const workspaces = await this.dp.listWorkspaces();
+    const ws = this.resolveOneOrThrow(workspaces, workspace, 'Workspace');
+    const projects = await this.dp.listProjects(ws.id);
+    return this.deleteHierarchyPlan({
+      kind: 'workspace', action: 'DELETE_WORKSPACE', ownerId,
+      entity: ws, children: projects, childKind: 'project',
+      describeChild: p => `${p.name} (${p.id})`,
+      childToolHint: 'Delete them first (devpanel_plan_delete_project + devpanel_approve_and_execute_plan for each -- each project must itself have zero applications), then retry devpanel_plan_delete_workspace.',
+      target: { workspaceId: ws.id, workspaceName: ws.name },
+      proposedInput: { workspaceId: ws.id },
+      preconditions: { workspaceId: ws.id },
+    });
+  }
+
+  /** Shared by deleteProjectPlan/deleteWorkspacePlan: resolve exactly one item
+   *  by id (exact) or name (case-insensitive substring), throwing a "no match"
+   *  or "ambiguous, here are the candidates" error otherwise. */
+  private resolveOneOrThrow<T extends { id: string; name?: string }>(items: T[], query: string, label: string, scopeSuffix = ''): T {
+    const exact = items.find(i => i.id === query);
+    const matches = exact ? [exact] : items.filter(i => (i.name ?? '').toLowerCase().includes(query.toLowerCase()));
+    if (matches.length === 0) throw new Error(`No ${label.toLowerCase()} matches "${query}"${scopeSuffix}`);
+    if (matches.length > 1) {
+      const choices = matches.slice(0, 10).map(i => `${i.name} (${i.id})`).join(', ');
+      throw new Error(`${label} query is ambiguous: "${query}"${scopeSuffix}. Matches: ${choices}`);
+    }
+    return matches[0];
+  }
+
+  /** Shared by deleteProjectPlan/deleteWorkspacePlan: block with a clear message
+   *  listing them if the entity still has children, otherwise build the HIGH-risk
+   *  delete plan. Both are "resolve → require empty → delete" plans that only
+   *  differ in entity/child kind and messaging. */
+  private async deleteHierarchyPlan<T extends { id: string; name?: string }, C>(opts: {
+    kind: 'project' | 'workspace';
+    action: PlanAction;
+    ownerId: string;
+    entity: T;
+    children: C[];
+    childKind: string;
+    describeChild: (child: C) => string;
+    childToolHint: string;
+    target: Record<string, unknown>;
+    proposedInput: Record<string, unknown>;
+    preconditions: Preconditions;
+  }): Promise<ChangePlan> {
+    const { kind, entity, children, childKind, describeChild, childToolHint } = opts;
+    const Kind = kind[0].toUpperCase() + kind.slice(1);
+    if (children.length > 0) {
+      const names = children.map(describeChild).join(', ');
+      throw new Error(`${Kind} ${entity.name} (${entity.id}) still has ${children.length} ${childKind}(s): ${names}. ${childToolHint}`);
+    }
+    return this.createPlan({
+      action: opts.action, risk: 'HIGH', ownerId: opts.ownerId, summary: `Delete ${kind} ${entity.name} (${entity.id})`,
+      target: opts.target, proposedInput: opts.proposedInput,
+      steps: [
+        step(1, 'REVALIDATE', `Verify the ${kind} still has zero ${childKind}s`, false),
+        step(2, opts.action, `Delete the DevPanel ${kind}`, true),
+        step(3, 'VERIFY_DELETED', `Confirm the ${kind} no longer appears in devpanel_list_${kind}s`, false),
+      ],
+      preconditions: opts.preconditions,
+      expectedResult: `${Kind} ${entity.name} no longer exists.`,
+      rollback: `No undo; ${kind} deletion is permanent.`,
     });
   }
 

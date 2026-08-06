@@ -65,6 +65,30 @@ const grants = new Map<string, StoredGrant>();
 const refreshToAccess = new Map<string, string>();
 const pendingConsent = new Map<string, PendingConsent>();
 
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * codes/grants/pendingConsent only get pruned when something happens to look
+ * them up (a token verify, a consent POST); an abandoned OAuth attempt or an
+ * unused expired code/grant otherwise sits in memory until the process
+ * restarts. Sweep periodically instead. `clients` (RFC 7591 dynamic
+ * registrations) are intentionally NOT swept -- they have no TTL by design.
+ */
+function sweepExpired(): void {
+  const now = Date.now();
+  for (const [code, stored] of codes) if (stored.expiresAt < now) codes.delete(code);
+  for (const [token, grant] of grants) if (grant.expiresAt < now) grants.delete(token);
+  for (const [refreshToken, accessId] of refreshToAccess) if (!grants.has(accessId)) refreshToAccess.delete(refreshToken);
+  for (const [token, pending] of pendingConsent) if (pending.expiresAt < now) pendingConsent.delete(token);
+}
+
+/** Call once when the http transport starts. Matches session.ts's startAutoRefresh() pattern. */
+export function startOAuthMapSweep(): NodeJS.Timeout {
+  const timer = setInterval(sweepExpired, SWEEP_INTERVAL_MS);
+  timer.unref();
+  return timer;
+}
+
 function newToken(): string {
   return randomBytes(32).toString('base64url');
 }

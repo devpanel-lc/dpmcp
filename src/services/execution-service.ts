@@ -39,6 +39,13 @@ export class ExecutionService {
         throw new Error(`Plan is stale: the project now has ${apps.length} application(s). Delete them first, then create a new delete-project plan.`);
       }
     }
+    if (plan.action === 'DELETE_WORKSPACE' && plan.preconditions.workspaceId) {
+      const projects = await this.dp.listProjects(plan.preconditions.workspaceId);
+      if (projects.length > 0) {
+        await this.store.setStatus(plan.id, 'STALE');
+        throw new Error(`Plan is stale: the workspace now has ${projects.length} project(s). Delete them first, then create a new delete-workspace plan.`);
+      }
+    }
     if (!plan.preconditions.applicationId) return;
     const app = await this.dp.getApplication(this.refFromPreconditions(plan.preconditions));
     if (plan.preconditions.appFingerprint && applicationFingerprint(app) !== plan.preconditions.appFingerprint) {
@@ -101,6 +108,12 @@ export class ExecutionService {
         return this.dp.deleteProject({
           id: plan.preconditions.projectId ?? '',
           workspaceId: plan.preconditions.workspaceId ?? '',
+          name: '',
+        });
+      }
+      case 'DELETE_WORKSPACE': {
+        return this.dp.deleteWorkspace({
+          id: plan.preconditions.workspaceId ?? '',
           name: '',
         });
       }

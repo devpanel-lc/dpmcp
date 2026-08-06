@@ -9,6 +9,7 @@ The core rule is simple:
 ## MVP scope
 
 Read:
+- whoami (DevPanel profile of the currently authenticated bearer/session)
 - list applications
 - get application
 - get application activities
@@ -23,6 +24,7 @@ Plan-only:
 - restore backup
 - delete application
 - delete project (blocked if the project still has applications -- delete those first)
+- delete workspace (blocked if the workspace still has projects -- delete those first)
 - enable/disable code server (VSCode) on a deployed application (see caveat below)
 - enable/disable phpMyAdmin on a deployed application (see caveat below)
 

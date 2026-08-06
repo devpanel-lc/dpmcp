@@ -3,15 +3,7 @@ import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient }
 import { RealDevPanelClient } from './real-devpanel.js';
 import { MockDevPanelClient } from './mock-devpanel.js';
 import { config } from '../config.js';
-import { getAccessToken, getLoginUrl, getOwnerId } from '../auth/session.js';
-
-/**
- * Identity of the plan owner. With SSO this is the Cognito `sub` claim from
- * the server-side session; without a session it is 'local'.
- */
-export function currentOwnerId(): string {
-  return getOwnerId();
-}
+import { getAccessToken, getLoginUrl } from '../auth/session.js';
 
 export class TokenScopedDevPanelClient implements DevPanelClient {
   private readonly mockClient = new MockDevPanelClient();
@@ -29,6 +21,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
       );
     }
     return new RealDevPanelClient(token, true); // SSO session token — supports refresh on 401
+  }
+
+  async whoami(): Promise<unknown> {
+    return this.client().whoami();
   }
 
   async listWorkspaces(): Promise<WorkspaceRef[]> {
@@ -113,6 +109,10 @@ export class TokenScopedDevPanelClient implements DevPanelClient {
 
   async deleteProject(project: ProjectRef): Promise<unknown> {
     return this.client().deleteProject(project);
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    return this.client().deleteWorkspace(workspace);
   }
 
   async listGitOwners(provider?: string): Promise<GitOwnerRef[]> {

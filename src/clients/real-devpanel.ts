@@ -228,6 +228,10 @@ export class RealDevPanelClient implements DevPanelClient {
     };
   }
 
+  async whoami(): Promise<unknown> {
+    return this.request(apiPath('/api/v2/users/profile'));
+  }
+
   async listWorkspaces(): Promise<WorkspaceRef[]> {
     const raw = await this.request(`${apiPath('/api/v2/workspaces')}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'workspaces', 'data', 'items');
@@ -582,6 +586,12 @@ export class RealDevPanelClient implements DevPanelClient {
   async deleteProject(project: ProjectRef): Promise<unknown> {
     if (!project.workspaceId || !project.id) throw new Error(`Project ${project.id} lacks workspaceId required by DevPanel nested endpoints`);
     const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}', { workspaceId: project.workspaceId, projectId: project.id });
+    return this.request(path, { method: 'DELETE' });
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    if (!workspace.id) throw new Error('Workspace id is required to delete a workspace');
+    const path = apiPath('/api/v2/workspaces/{workspaceId}', { workspaceId: workspace.id });
     return this.request(path, { method: 'DELETE' });
   }
 

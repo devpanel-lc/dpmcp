@@ -50,6 +50,10 @@ export class MockDevPanelClient implements DevPanelClient {
     this.apps.set(app.id, app);
   }
 
+  async whoami(): Promise<unknown> {
+    return { id: 'mock-user-1', email: 'mock@devpanel.local', name: 'Mock User' };
+  }
+
   async listWorkspaces(): Promise<WorkspaceRef[]> {
     return structuredClone(this.workspaces);
   }
@@ -226,5 +230,12 @@ export class MockDevPanelClient implements DevPanelClient {
     if (idx === -1) throw new Error(`Project not found: ${project.id}`);
     this.projects.splice(idx, 1);
     return { status: 'DELETED', projectId: project.id };
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    const idx = this.workspaces.findIndex(w => w.id === workspace.id);
+    if (idx === -1) throw new Error(`Workspace not found: ${workspace.id}`);
+    this.workspaces.splice(idx, 1);
+    return { status: 'DELETED', workspaceId: workspace.id };
   }
 }

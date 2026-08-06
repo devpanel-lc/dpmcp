@@ -75,6 +75,11 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   // ---- Discovery tools ----
 
+  defineReadOnlyTool(server, 'devpanel_whoami',
+    'Read-only. Get the DevPanel profile of whichever bearer token/session this MCP connection is authenticated as -- useful to confirm which DevPanel identity a token-mode session actually resolves to.',
+    {},
+    async () => text(await dp.whoami()));
+
   defineReadOnlyTool(server, 'devpanel_list_workspaces',
     'Read-only. List all DevPanel workspaces accessible to the authenticated user.',
     {},
@@ -263,9 +268,9 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   server.registerTool('devpanel_plan_backup_application', {
     description: 'PLAN ONLY. Create a proposed manual-backup plan. Does not change DevPanel.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    inputSchema: applicationLookupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.backupPlan(application, currentOwnerId(), workspaceId) }));
 
   server.registerTool('devpanel_plan_restore_application', {
     description: 'DISABLED. Restoring a backup is not supported via DevPanel MCP or the DevPanel UI. Instead, get the database dump with devpanel_get_backup_download_url and import it into the application\'s database using phpMyAdmin.',
@@ -282,15 +287,21 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
 
   server.registerTool('devpanel_plan_delete_application', {
     description: 'PLAN ONLY. Create a proposed deletion plan after reading current application and backup state. Does not change DevPanel.',
-    inputSchema: { ...wsOpt, application: z.string().min(1) },
+    inputSchema: applicationLookupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ application, workspaceId }) => text({ plan: await plans.deletePlan(application, currentOwnerId()) }));
+  }, async ({ application, workspaceId }) => text({ plan: await plans.deletePlan(application, currentOwnerId(), workspaceId) }));
 
   server.registerTool('devpanel_plan_delete_project', {
     description: 'PLAN ONLY. Create a proposed plan to delete a DevPanel project. If the project still has applications, this fails and lists them -- delete all of them first with devpanel_plan_delete_application (and devpanel_approve_and_execute_plan) before retrying.',
     inputSchema: { ...wsOpt, project: z.string().min(1).describe('Project ID or name') },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ project, workspaceId }) => text({ plan: await plans.deleteProjectPlan(workspaceId, project, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
+
+  server.registerTool('devpanel_plan_delete_workspace', {
+    description: 'PLAN ONLY. Create a proposed plan to delete a DevPanel workspace. If the workspace still has projects, this fails and lists them -- delete all of them first with devpanel_plan_delete_project (each project must itself have zero applications) before retrying.',
+    inputSchema: { workspace: z.string().min(1).describe('Workspace ID or name') },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ workspace }) => text({ plan: await plans.deleteWorkspacePlan(workspace, currentOwnerId()), next: 'Plan created. Call devpanel_approve_and_execute_plan with the plan ID to request human approval and execute.' }));
 
   server.registerTool('devpanel_plan_create_workspace', {
     description: 'PLAN ONLY. Create an immutable proposed plan to create a DevPanel workspace on an existing environment (no cluster provisioning). Obtain the environmentId from devpanel_list_environments. Does not change DevPanel until a human approves the plan.',
