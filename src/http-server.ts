@@ -201,12 +201,15 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   const app = express();
   app.disable('x-powered-by');
 
-  app.use(hostGuard());
-
+  // Exempt from hostGuard: platform healthcheck probes (Railway et al.) often
+  // don't send a Host header matching the public domain, and this endpoint
+  // exposes no state or secrets, so there's nothing for the allowlist to protect.
   app.get('/healthz', (_req, res) => {
     res.setHeader('cache-control', 'no-store');
     res.status(200).type('text/plain').send('ok');
   });
+
+  app.use(hostGuard());
 
   // MCP OAuth authorization server (metadata, dynamic registration, authorize, token, revoke).
   app.use(
