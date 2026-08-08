@@ -87,7 +87,6 @@ export const config = {
   /** Cap on how long a client-native elicitation dialog may take before we fall back to the external review URL. */
   elicitTimeoutMs: Number(env('DP_ELICIT_TIMEOUT_MS', '60000')),
   cognito: {
-    region: env('COGNITO_REGION', ''),
     clientId: env('COGNITO_CLIENT_ID', ''),
     clientSecret: process.env.COGNITO_CLIENT_SECRET ?? '',
     /** Cognito hosted-UI domain, e.g. https://mcp-client-domain.auth.us-west-1.amazoncognito.com */

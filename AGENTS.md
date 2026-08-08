@@ -10,6 +10,9 @@ MCP server (TypeScript, stdio or http transport via `DP_TRANSPORT`) for planning
 |------|---------|
 | Install deps | `npm install` |
 | Dev server (stdio) | `npm run dev` |
+| Dev server, explicit stdio + shared token | `npm run start:stdio` |
+| Dev server, http + shared bearer | `npm run start:http:bearer` |
+| Dev server, http + bring-your-own-token | `npm run start:http:token` |
 | MCP Inspector | `npm run inspector` |
 | Typecheck | `npm run typecheck` |
 | Build | `npm run build` |
