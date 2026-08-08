@@ -33,19 +33,17 @@ const applicationLookupSchema = {
 };
 
 /**
- * Wrap client-native elicitation:
- * - http transport: streamable-HTTP clients cannot show a native approval
- *   dialog, so fail fast — the ApprovalService falls back to the external
- *   review URL (auto mode) or reports cancelled (form/url modes).
- * - stdio transport: cap the wait so a client that never answers cannot hang
- *   the tool call forever; on timeout the service falls back to the external URL.
+ * Wrap client-native elicitation with a wait cap so a client that never
+ * answers (doesn't implement elicitation, or opened no stream to receive the
+ * request on) cannot hang the tool call forever. The SDK's own
+ * `elicitInput()` already rejects per-client based on the capabilities the
+ * connected client declared at `initialize` (`elicitation.form`/`.url`),
+ * transport-independent — ApprovalService catches that rejection and falls
+ * back to the external review URL (auto mode) or reports cancelled (form/url
+ * modes), same as a timeout here.
  */
 function withElicitationGuard(elicitation: ElicitFn): ElicitFn {
-  const unsupported = config.transport === 'http';
   return async (...args) => {
-    if (unsupported) {
-      throw new Error('client-native elicitation is not supported on the http transport — use the external review URL');
-    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
