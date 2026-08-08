@@ -199,17 +199,24 @@ function stubDevPanelFetch(handler: (call: DevPanelCall) => { ok: boolean; statu
 }
 
 describe('http transport server', () => {
-  it('serves /healthz and rejects unknown Host headers', async () => {
+  it('serves /healthz regardless of Host header, and rejects unknown Host headers on other routes', async () => {
     ctx = await startApp();
     const res = await fetch(`${ctx.base}/healthz`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('ok');
 
     const port = config.httpPort;
-    const evil = await rawGet(port, '/healthz', 'evil.example');
-    expect(evil.status).toBe(421);
-    const allowed = await rawGet(port, '/healthz', '127.0.0.1');
-    expect(allowed.status).toBe(200);
+    // /healthz is exempt from hostGuard: platform healthcheck probes (Railway
+    // et al.) may not send a Host header matching the public domain, and this
+    // endpoint exposes no state or secrets.
+    const evilHealthz = await rawGet(port, '/healthz', 'evil.example');
+    expect(evilHealthz.status).toBe(200);
+
+    // hostGuard still protects every other route.
+    const evilMcp = await rawGet(port, '/mcp', 'evil.example');
+    expect(evilMcp.status).toBe(421);
+    const allowedMcp = await rawGet(port, '/mcp', '127.0.0.1');
+    expect(allowedMcp.status).toBe(401); // past hostGuard, rejected by bearer auth instead
   });
 
   it('protects /mcp with bearer auth and advertises the resource metadata URL', async () => {

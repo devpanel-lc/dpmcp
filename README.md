@@ -108,6 +108,55 @@ Suggested demo:
 4. Approve via Form Elicitation dialog (or open the returned `approval_url`)
 5. `devpanel_list_backups` to verify the result
 
+## Environment variables
+
+Full annotated defaults live in `.env.example` (`cp .env.example .env` to start) -- this table is the quick-reference index. Grouped by what they configure:
+
+**Core**
+
+| Var | Default | Required when | Notes |
+|---|---|---|---|
+| `DP_MODE` | `mock` | -- | `mock` (no external calls) or `real` (calls DevPanel) |
+| `DP_API_BASE_URL` | `http://localhost.invalid` | `DP_MODE=real` | DevPanel REST API base URL |
+| `DP_ACCESS_TOKEN` | (empty) | `DP_MODE=real`; also `DP_AUTH_MODE=off` | DevPanel personal access token, forwarded to the DevPanel API |
+| `DP_DEFAULT_WORKSPACE_ID` | `mock-workspace` | `DP_MODE=real` | Workspace used when a tool call doesn't specify one |
+| `DP_ENABLE_REAL_CREATE` | `false` | -- | Gates real `create application` (see [Real DevPanel mode](#real-devpanel-mode)) |
+| `DP_CREATE_PROFILE` | `drupal11-demo` | -- | Which `config/create-profiles/*.json` payload to use |
+
+**Transport & `/mcp` auth** (see [HTTP transport mode](#http-transport-mode) for the full picture) -- the `npm run start:*` scripts below set `DP_TRANSPORT`/`DP_AUTH_MODE` for you, so you normally don't hand-edit these two:
+
+| Var | Default | Required when | Notes |
+|---|---|---|---|
+| `DP_TRANSPORT` | `stdio` | -- | `stdio` or `http` |
+| `DP_AUTH_MODE` | `off` | -- | `off` (shared token), `sso`, or `token` (bring-your-own) |
+| `DP_MCP_BEARER_TOKEN` | (empty) | -- | Static bearer `/mcp` requires in `off` mode; falls back to `DP_ACCESS_TOKEN` |
+| `DP_PUBLIC_BASE_URL` | (empty) | `DP_TRANSPORT=http` | Public origin, e.g. `https://dpmcp.up.railway.app` (no trailing slash) |
+| `DP_ALLOWED_HOSTS` | derived from `DP_PUBLIC_BASE_URL` | -- | Host-header allowlist (anti DNS-rebinding) |
+| `PORT` | `3000` | -- | HTTP listen port (Railway sets this automatically) |
+| `DP_ELICIT_TIMEOUT_MS` | `60000` | -- | Max wait for a client-native elicitation dialog before falling back to the external review URL |
+
+**Cognito SSO** (`DP_AUTH_MODE=sso` only)
+
+| Var | Default | Notes |
+|---|---|---|
+| `COGNITO_CLIENT_ID` | (empty) | Dedicated hosted-UI-enabled app client for this server |
+| `COGNITO_CLIENT_SECRET` | (empty) | Leave empty for a public client |
+| `COGNITO_DOMAIN` | (empty) | Hosted-UI custom domain, e.g. `https://login.site.devpanel.com` |
+| `COGNITO_SCOPES` | `phone email openid profile aws.cognito.signin.user.admin offline_access` | `offline_access` is what enables auto-renew |
+| `COGNITO_REDIRECT_URI` | derived | `{DP_PUBLIC_BASE_URL}/callback` (http) or `http://localhost:{DP_LOGIN_CALLBACK_PORT}/callback` (stdio) |
+| `DP_LOGIN_CALLBACK_PORT` | `8788` | Loopback port for the stdio-mode login callback |
+| `DP_LOGIN_TIMEOUT_MS` | `180000` | How often to re-print the login URL while a login is pending |
+
+**Approval**
+
+| Var | Default | Notes |
+|---|---|---|
+| `APPROVAL_MODE` | `auto` | `auto` / `form` / `url` / `external` -- see [Approval priority](#approval-priority) |
+| `APPROVAL_HOST` | `127.0.0.1` | Bind host for the external review UI (stdio mode) |
+| `APPROVAL_PORT` | `8787` | Bind port for the external review UI (stdio mode) |
+| `APPROVAL_PUBLIC_BASE_URL` | derived | `{DP_PUBLIC_BASE_URL}` (http) or `http://127.0.0.1:{APPROVAL_PORT}` (stdio) |
+| `PLAN_TTL_SECONDS` | `900` | How long a plan stays valid before going `STALE` |
+
 ## Real DevPanel mode
 
 Set:
@@ -159,6 +208,14 @@ The spec documents request bodies only -- it has no response schemas for `Worksp
 ## HTTP transport mode
 
 `DP_TRANSPORT` (`stdio` default, or `http`) and `DP_AUTH_MODE` (`off` default, `sso`, or `token`) are independent settings. Transport picks stdio vs. public HTTP; auth mode picks how `/mcp` authenticates callers and how a DevPanel credential is obtained. `DP_MODE=mock` still works over `DP_TRANSPORT=http` -- transport doesn't force real mode.
+
+Switching between the common combinations doesn't require hand-editing `DP_TRANSPORT`/`DP_AUTH_MODE` in `.env` -- three npm scripts set them for you (Node's `loadEnvFile()` never overrides vars already set in the shell, so these always win over `.env`; secrets like `DP_PUBLIC_BASE_URL`, `DP_MCP_BEARER_TOKEN`, `DP_ACCESS_TOKEN` still come from `.env` as usual):
+
+```
+npm run start:stdio        # DP_TRANSPORT=stdio DP_AUTH_MODE=off  (local, single shared token)
+npm run start:http:bearer  # DP_TRANSPORT=http  DP_AUTH_MODE=off  (public HTTP, single shared bearer)
+npm run start:http:token   # DP_TRANSPORT=http  DP_AUTH_MODE=token (public HTTP, bring-your-own-token)
+```
 
 ```env
 DP_TRANSPORT=http
