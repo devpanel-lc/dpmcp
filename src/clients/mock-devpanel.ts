@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
 
 export class MockDevPanelClient implements DevPanelClient {
+  getCallerIdentity(): string {
+    return 'local';
+  }
+
   private apps = new Map<string, ApplicationRef>();
   private backups = new Map<string, BackupRef[]>();
   private workspaces: WorkspaceRef[] = [
@@ -44,6 +48,10 @@ export class MockDevPanelClient implements DevPanelClient {
       status: 'UNDEPLOY_APPLICATION_SUCCESS', originBranch: 'main'
     };
     this.apps.set(app.id, app);
+  }
+
+  async whoami(): Promise<unknown> {
+    return { id: 'mock-user-1', email: 'mock@devpanel.local', name: 'Mock User' };
   }
 
   async listWorkspaces(): Promise<WorkspaceRef[]> {
@@ -114,6 +122,12 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(this.backups.get(app.id) ?? []);
   }
 
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    const backup = (this.backups.get(app.id) ?? []).find(b => b.id === backupId);
+    if (!backup) throw new Error(`Backup not found: ${backupId}`);
+    return { backupId, fileId, downloadURL: `https://mock.devpanel.invalid/backups/${backupId}/files/${fileId}` };
+  }
+
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
     const projectId = `project_${randomUUID().slice(0, 8)}`;
     const app: ApplicationRef = {
@@ -162,6 +176,30 @@ export class MockDevPanelClient implements DevPanelClient {
     return structuredClone(existing);
   }
 
+  async deactivateApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.status = 'UNDEPLOY_APPLICATION_SUCCESS';
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.isEnableEditor = enabled;
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    const existing = this.apps.get(app.id);
+    if (!existing) throw new Error(`Application not found: ${app.id}`);
+    existing.isEnablePMA = enabled;
+    this.apps.set(app.id, existing);
+    return structuredClone(existing);
+  }
+
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     await this.getApplication(app);
     const backup: BackupRef = {
@@ -185,5 +223,19 @@ export class MockDevPanelClient implements DevPanelClient {
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     if (!this.apps.delete(app.id)) throw new Error(`Application not found: ${app.id}`);
     return { status: 'DELETED', applicationId: app.id };
+  }
+
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    const idx = this.projects.findIndex(p => p.id === project.id && p.workspaceId === project.workspaceId);
+    if (idx === -1) throw new Error(`Project not found: ${project.id}`);
+    this.projects.splice(idx, 1);
+    return { status: 'DELETED', projectId: project.id };
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    const idx = this.workspaces.findIndex(w => w.id === workspace.id);
+    if (idx === -1) throw new Error(`Workspace not found: ${workspace.id}`);
+    this.workspaces.splice(idx, 1);
+    return { status: 'DELETED', workspaceId: workspace.id };
   }
 }

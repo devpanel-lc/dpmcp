@@ -335,7 +335,7 @@ describe('DevPanel upstream auth', () => {
       authHeaders.push((call.init?.headers as Record<string, string>)?.authorization ?? '');
       return { ok: true, text: async () => JSON.stringify({ workspaces: [] }) };
     });
-    const client = new RealDevPanelClient('access-token-001');
+    const client = new RealDevPanelClient('access-token-001', true);
     await client.listWorkspaces();
     expect(authHeaders[0]).toBe('Bearer access-token-001');
   });
@@ -353,7 +353,7 @@ describe('DevPanel upstream auth', () => {
       if (devPanelCalls === 1) return { ok: false, status: 401, text: async () => 'Unauthorized' };
       return { ok: true, text: async () => JSON.stringify({ workspaces: [] }) };
     });
-    const client = new RealDevPanelClient('expired-access');
+    const client = new RealDevPanelClient('expired-access', true);
     const result = await client.listWorkspaces();
     expect(result).toEqual([]);
     expect(authHeaders).toEqual(['Bearer expired-access', 'Bearer fresh-access']);
@@ -368,9 +368,30 @@ describe('DevPanel upstream auth', () => {
       }
       return { ok: false, status: 401, text: async () => 'Unauthorized' };
     });
-    const client = new RealDevPanelClient('expired-access');
+    const client = new RealDevPanelClient('expired-access', true);
     await expect(client.listWorkspaces()).rejects.toThrow('re-login required');
     expect(getSession()).toBeNull();
+  });
+
+  it('reports a static-token 401 without SSO language or session churn (off mode)', async () => {
+    // A session may exist (leftover from a previous login) — off mode must not
+    // touch it and must not attempt an SSO refresh.
+    saveSession(makeSession({ accessToken: 'static-pat', expiresAt: Date.now() + 3600_000 }));
+    let devPanelCalls = 0;
+    const urls: string[] = [];
+    stubFetch((call) => {
+      urls.push(call.url);
+      if (call.url.includes('/oauth2/token')) {
+        throw new Error('refresh must not be attempted in off mode');
+      }
+      devPanelCalls += 1;
+      return { ok: false, status: 401, text: async () => 'Unauthorized' };
+    });
+    const client = new RealDevPanelClient('static-pat'); // ssoMode defaults to false
+    await expect(client.listWorkspaces()).rejects.toThrow('DP_ACCESS_TOKEN');
+    expect(devPanelCalls).toBe(1); // no retry with a fresh token
+    expect(urls.some((u) => u.includes('/oauth2/token'))).toBe(false); // no refresh attempt
+    expect(getSession()).not.toBeNull(); // session left untouched
   });
 
   it('TokenScopedDevPanelClient throws SSO login required in real mode without a session', async () => {

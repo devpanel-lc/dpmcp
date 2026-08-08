@@ -1,8 +1,10 @@
-import type { ApplicationRef, BackupRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
+import { createHash } from 'node:crypto';
+import type { ApplicationRef, BackupRef, BackupFileRef, WorkspaceRef, ProjectRef, ProjectTypeRef, ActivateConfig, GitOwnerRef, GitRepoRef, GitBranchRef, EnvironmentRef } from '../domain/types.js';
 import type { CreateApplicationRequest, CreateWorkspaceRequest, DevPanelClient } from './devpanel.js';
+import { apiPath } from './api-paths.js';
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
-import { getAccessToken, getLoginUrl, refreshNow, clearSession } from '../auth/session.js';
+import { getAccessToken, getLoginUrl, getOwnerId, refreshNow, clearSession } from '../auth/session.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 150;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
@@ -25,6 +27,30 @@ const ACTIVATE_DEFAULTS = {
   isEnablePMA: false,
 };
 
+// Mirrors a real DevPanel UI application-update request (captured 2026-08-06). This
+// endpoint expects the application's FULL current config on every PATCH -- the DevPanel
+// UI reads current state and PATCHes it back with one field flipped, it does not accept
+// a partial/delta body. buildUpdateAppPayload() re-reads the application first and
+// extracts as many of these fields as possible from its raw GET response; the values
+// below are only the last-resort fallback for fields presumed safe to default (fixed
+// platform conventions). Fields where a wrong guess could silently downgrade real
+// resources or clobber unrelated state (container image, capacity/capacityLimit,
+// storage, groupType, isEnablePMA, isEnableEditor -- the latter two because toggling
+// one must not silently flip the other back to a guessed default) are NOT defaulted
+// from here -- buildUpdateAppPayload() throws if they can't be read live.
+const UPDATE_APP_SAFE_DEFAULTS = {
+  appRoot: '/var/www/html',
+  webRoot: '/var/www/html/web',
+  codesDirectory: '/var/www/html',
+  startAppScript: 'tail -f ~/dev/log',
+  imagePullPolicy: 'Always',
+  filePermissionLevel: 'stricterPermission',
+  isEnablePPA: false,
+  isEnableBasicAuth: false,
+  ipRestrictionSlug: '',
+  isEnable: true,
+};
+
 function asRecord(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
   return v as Record<string, unknown>;
@@ -32,6 +58,16 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function firstString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) if (typeof obj[k] === 'string') return obj[k] as string;
+  return undefined;
+}
+
+function firstNumber(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const k of keys) if (typeof obj[k] === 'number') return obj[k] as number;
+  return undefined;
+}
+
+function firstBoolean(obj: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const k of keys) if (typeof obj[k] === 'boolean') return obj[k] as boolean;
   return undefined;
 }
 
@@ -51,7 +87,29 @@ function extractItems(raw: unknown, ...keys: string[]): unknown[] {
 }
 
 export class RealDevPanelClient implements DevPanelClient {
-  constructor(private readonly accessToken: string) { }
+  /**
+   * @param accessToken The token to send to DevPanel.
+   * @param ssoMode     true = SSO session token (supports refresh on 401).
+   *                    false = static personal access token (no refresh).
+   * @param sourceHint  Where this token came from, for the 401 error message.
+   */
+  constructor(
+    private readonly accessToken: string,
+    private readonly ssoMode: boolean = false,
+    private readonly sourceHint: string = 'DP_ACCESS_TOKEN in .env',
+  ) { }
+
+  // sso mode: identity is the Cognito sub (single shared session, as before).
+  // off/token mode: identity is derived from the DevPanel access token itself
+  // -- a one-way hash, never the raw token, so it's safe to echo back in
+  // PLAN_OWNER_MISMATCH error payloads while still being stable per-credential
+  // (same token -> same identity; different tokens, e.g. different callers in
+  // token mode, -> different identities, so plan ownership actually isolates
+  // different users instead of collapsing everyone onto 'local').
+  getCallerIdentity(): string {
+    if (this.ssoMode) return getOwnerId();
+    return `token:${createHash('sha256').update(this.accessToken).digest('hex').slice(0, 16)}`;
+  }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     return this.requestWithToken(path, init, this.accessToken, false);
@@ -76,6 +134,10 @@ export class RealDevPanelClient implements DevPanelClient {
     let body: unknown = text;
     try { body = text ? JSON.parse(text) : undefined; } catch { /* keep text */ }
     if (response.status === 401) {
+      if (!this.ssoMode) {
+        // Static token mode: no session to refresh — report the bad token.
+        throw new Error(`DevPanel 401 ${path}: access token rejected — check ${this.sourceHint}`);
+      }
       if (retried) {
         clearSession();
         throw new Error(`DevPanel 401 ${path}: access token rejected after refresh — SSO re-login required (open ${getLoginUrl() || 'the Cognito login URL'})`);
@@ -105,6 +167,8 @@ export class RealDevPanelClient implements DevPanelClient {
       hostname: firstString(r, 'hostname', 'applicationURL') ?? fallback?.hostname,
       status: firstString(r, 'status') ?? fallback?.status,
       originBranch: firstString(r, 'originBranch') ?? fallback?.originBranch,
+      isEnableEditor: firstBoolean(r, 'isEnableEditor') ?? fallback?.isEnableEditor,
+      isEnablePMA: firstBoolean(r, 'isEnablePMA') ?? fallback?.isEnablePMA,
       raw,
     };
   }
@@ -131,7 +195,7 @@ export class RealDevPanelClient implements DevPanelClient {
   async listEnvironments(search?: string): Promise<EnvironmentRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
     if (search) qs.set('search', search);
-    const raw = await this.request(`/api/v2/environments?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/environments')}?${qs}`);
     const items = extractItems(raw, 'environments', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) return raw.map(item => this.normalizeEnvironment(item));
     return items.map(item => this.normalizeEnvironment(item));
@@ -141,7 +205,7 @@ export class RealDevPanelClient implements DevPanelClient {
     const payload: Record<string, unknown> = { name: input.name, environmentId: input.environmentId };
     if (input.description) payload.description = input.description;
     if (input.tags && input.tags.length > 0) payload.tags = input.tags;
-    const raw = await this.request('/api/v2/workspaces', { method: 'POST', body: JSON.stringify(payload) });
+    const raw = await this.request(apiPath('/api/v2/workspaces'), { method: 'POST', body: JSON.stringify(payload) });
     const normalized = this.normalizeWorkspace(raw);
     if (!normalized.id) {
       const r = asRecord(raw);
@@ -164,20 +228,24 @@ export class RealDevPanelClient implements DevPanelClient {
     };
   }
 
+  async whoami(): Promise<unknown> {
+    return this.request(apiPath('/api/v2/users/profile'));
+  }
+
   async listWorkspaces(): Promise<WorkspaceRef[]> {
-    const raw = await this.request('/api/v2/workspaces?pageIndex=1&pageSize=100');
+    const raw = await this.request(`${apiPath('/api/v2/workspaces')}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'workspaces', 'data', 'items');
     return items.map(item => this.normalizeWorkspace(item));
   }
 
   async listProjects(workspaceId: string): Promise<ProjectRef[]> {
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects?pageIndex=1&pageSize=100`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/projects', { workspaceId })}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'projects', 'data', 'items');
     return items.map(item => this.normalizeProject(item));
   }
 
   async listProjectTypes(): Promise<ProjectTypeRef[]> {
-    const raw = await this.request('/api/v2/projects/project-types');
+    const raw = await this.request(apiPath('/api/v2/projects/project-types'));
     const items = extractItems(raw, 'projectTypes', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) return raw.map(k => ({ key: String(k), label: String(k) }));
     return items.map(item => {
@@ -189,35 +257,37 @@ export class RealDevPanelClient implements DevPanelClient {
   async listApplications(workspaceId: string, search?: string): Promise<ApplicationRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
     if (search) qs.set('search', search);
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/applications?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/applications', { workspaceId })}?${qs}`);
     const items = extractItems(raw, 'applications', 'data', 'items');
     return items.map(item => this.normalizeApplication(item));
   }
 
   async listProjectApplications(workspaceId: string, projectId: string): Promise<ApplicationRef[]> {
     const qs = new URLSearchParams({ pageIndex: '1', pageSize: '100' });
-    const raw = await this.request(`/api/v2/workspaces/${workspaceId}/projects/${projectId}/applications?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId, projectId })}?${qs}`);
     const items = extractItems(raw, 'applications', 'data', 'items');
     return items.map(item => this.normalizeApplication(item));
   }
 
   async getApplication(app: ApplicationRef): Promise<ApplicationRef> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}`);
+    const raw = await this.request(apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }));
     return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
   }
 
   async getApplicationActivities(app: ApplicationRef): Promise<unknown> {
-    return this.request(`/api/v2/activities?workspaceId=${encodeURIComponent(app.workspaceId)}&projectId=${encodeURIComponent(app.projectId)}&applicationId=${encodeURIComponent(app.id)}&pageIndex=1&pageSize=50`);
+    return this.request(`${apiPath('/api/v2/activities')}?workspaceId=${encodeURIComponent(app.workspaceId)}&projectId=${encodeURIComponent(app.projectId)}&applicationId=${encodeURIComponent(app.id)}&pageIndex=1&pageSize=50`);
   }
 
   async getApplicationLogs(app: ApplicationRef, containerName = 'php', pageSize = 100): Promise<unknown> {
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/http-logs/${encodeURIComponent(containerName)}?pageSize=${pageSize}`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/http-logs/{containerName}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, containerName });
+    return this.request(`${path}?pageSize=${pageSize}`);
   }
 
   async listBackups(app: ApplicationRef): Promise<BackupRef[]> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups?pageIndex=1&pageSize=100`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    const raw = await this.request(`${path}?pageIndex=1&pageSize=100`);
     const items = extractItems(raw, 'backups', 'data', 'items');
     return items.map(item => {
       const x = asRecord(item);
@@ -229,6 +299,27 @@ export class RealDevPanelClient implements DevPanelClient {
         raw: item,
       };
     }).filter(b => b.id);
+  }
+
+  async getBackupFile(app: ApplicationRef, backupId: string, fileId: string): Promise<BackupFileRef> {
+    this.requireHierarchy(app);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups/{backupId}/files/{fileId}',
+      { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, backupId, fileId });
+    const raw = await this.request(`${path}?downloadURL=true`);
+    return this.normalizeBackupFile(raw, backupId, fileId);
+  }
+
+  // downloadURL is a pre-signed URL (S3/DO/Azure/OVH, valid 1h); downloadPgsqlURL
+  // is present alongside it when the application and environment both have
+  // isEnablePgDb set (controller source: applications.controller.ts:684-742).
+  private normalizeBackupFile(raw: unknown, backupId: string, fileId: string): BackupFileRef {
+    const r = asRecord(raw);
+    const downloadURL = firstString(r, 'downloadURL');
+    if (!downloadURL) {
+      throw new Error(`Backup file response had no downloadURL (backupId=${backupId}, fileId=${fileId}) -- pass downloadURL=true and confirm the file's status is ready.`);
+    }
+    const downloadPgsqlURL = firstString(r, 'downloadPgsqlURL');
+    return { backupId, fileId, downloadURL, downloadPgsqlURL, raw };
   }
 
   async createApplication(input: CreateApplicationRequest): Promise<ApplicationRef> {
@@ -247,14 +338,15 @@ export class RealDevPanelClient implements DevPanelClient {
     if (typeof payload.repositoryId === 'string' && /^\d+$/.test(payload.repositoryId)) {
       payload.repositoryId = Number(payload.repositoryId);
     }
-    const raw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects`, { method: 'POST', body: JSON.stringify(payload) });
+    const raw = await this.request(apiPath('/api/v2/workspaces/{workspaceId}/projects', { workspaceId: input.workspaceId }), { method: 'POST', body: JSON.stringify(payload) });
 
     const r = asRecord(raw);
     const projectId = firstString(r, '_id', 'id', 'projectId') ?? firstString(asRecord(r.project), '_id', 'id');
     if (!projectId) throw new Error('Create Project succeeded but projectId could not be extracted. Update RealDevPanelClient using the captured UI response contract.');
 
+    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: input.workspaceId, projectId });
     for (let i = 0; i < 60; i++) {
-      const listRaw = await this.request(`/api/v2/workspaces/${input.workspaceId}/projects/${projectId}/applications?pageIndex=1&pageSize=20`);
+      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
       const items = extractItems(listRaw, 'applications', 'data', 'items');
       if (items.length > 0) return this.normalizeApplication(items[0], { projectId, workspaceId: input.workspaceId, originBranch: input.branch });
       await new Promise(r => setTimeout(r, 2000));
@@ -266,17 +358,27 @@ export class RealDevPanelClient implements DevPanelClient {
     this.requireHierarchy(app);
     const body = { ...ACTIVATE_DEFAULTS, ...actConfig };
     const raw = await this.request(
-      `/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/activate`,
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/activate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
       { method: 'PATCH', body: JSON.stringify(body) },
     );
-    let last = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
-    // Activation is async: the endpoint returns immediately while a background task deploys to K8s.
-    // Poll the list endpoint until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded).
-    // On timeout, return the last observed status so slow deployments still surface as SUCCEEDED
-    // plans for the agent to verify with devpanel_list_applications.
-    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== 'DEPLOY_APPLICATION_SUCCESS'; attempt++) {
+    const initial = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    // Activation is async: the endpoint returns immediately while a background task deploys to
+    // K8s. Poll until the application reaches DEPLOY_APPLICATION_SUCCESS (bounded). On timeout,
+    // return the last observed status so slow deployments still surface as SUCCEEDED plans for
+    // the agent to verify with devpanel_list_applications.
+    return this.pollUntilStatus(app, 'DEPLOY_APPLICATION_SUCCESS', initial);
+  }
+
+  // Shared by activateApplication/deactivateApplication: both PATCH endpoints return
+  // immediately while a background task changes the application's status; poll the
+  // list endpoint (bounded) until it reaches targetStatus, returning the last observed
+  // state on timeout rather than throwing.
+  private async pollUntilStatus(app: ApplicationRef, targetStatus: string, initial: ApplicationRef): Promise<ApplicationRef> {
+    let last = initial;
+    const listPath = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications', { workspaceId: app.workspaceId, projectId: app.projectId });
+    for (let attempt = 0; attempt < ACTIVATE_POLL_MAX_ATTEMPTS && last.status !== targetStatus; attempt++) {
       await new Promise(resolve => setTimeout(resolve, ACTIVATE_POLL_INTERVAL_MS));
-      const listRaw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications?pageIndex=1&pageSize=20`);
+      const listRaw = await this.request(`${listPath}?pageIndex=1&pageSize=20`);
       const items = extractItems(listRaw, 'applications', 'data', 'items');
       const current = items.find(item => firstString(asRecord(item), '_id', 'id', 'applicationId') === app.id);
       if (current) last = this.normalizeApplication(current, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
@@ -284,9 +386,105 @@ export class RealDevPanelClient implements DevPanelClient {
     return last;
   }
 
+  // Confirmed real request (captured 2026-08-06): PATCH .../applications/{id}/update
+  // with the application's full config, one field flipped. See UPDATE_APP_SAFE_DEFAULTS
+  // above and buildUpdateAppPayload() below for how the rest of the body is sourced.
+  async setEditorEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.updateApp(app, { isEnableEditor: enabled });
+  }
+
+  async setPmaEnabled(app: ApplicationRef, enabled: boolean): Promise<ApplicationRef> {
+    return this.updateApp(app, { isEnablePMA: enabled });
+  }
+
+  private async updateApp(app: ApplicationRef, overrides: Record<string, unknown>): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const body = { ...(await this.buildUpdateAppPayload(app)), ...overrides };
+    const raw = await this.request(
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/update', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
+      { method: 'PATCH', body: JSON.stringify(body) },
+    );
+    return this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+  }
+
+  private async buildUpdateAppPayload(app: ApplicationRef): Promise<Record<string, unknown>> {
+    // Callers that already did a fresh getApplication() (execution-service.ts's
+    // ENABLE_EDITOR/DISABLE_EDITOR/ENABLE_PMA/DISABLE_PMA cases) pass its .raw
+    // straight through, avoiding a second live round-trip for data we already have.
+    const raw = app.raw ?? (await this.getApplication(app)).raw;
+    const r = asRecord(raw);
+    const requireString = (key: string): string => {
+      const v = firstString(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
+    const requireNumber = (key: string): number => {
+      const v = firstNumber(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
+    const requireBoolean = (key: string): boolean => {
+      const v = firstBoolean(r, key);
+      if (v === undefined) {
+        throw new Error(
+          `Cannot toggle code server/phpMyAdmin: application ${app.id}'s current "${key}" could not be read from DevPanel's ` +
+          'GET .../applications/{id} response. Update RealDevPanelClient.buildUpdateAppPayload() once the real response field ' +
+          'name is confirmed -- see README.md.'
+        );
+      }
+      return v;
+    };
+    return {
+      appRoot: firstString(r, 'appRoot') ?? UPDATE_APP_SAFE_DEFAULTS.appRoot,
+      webRoot: firstString(r, 'webRoot') ?? UPDATE_APP_SAFE_DEFAULTS.webRoot,
+      codesDirectory: firstString(r, 'codesDirectory') ?? UPDATE_APP_SAFE_DEFAULTS.codesDirectory,
+      startAppScript: firstString(r, 'startAppScript') ?? UPDATE_APP_SAFE_DEFAULTS.startAppScript,
+      containerImage: requireString('containerImage'),
+      imagePullPolicy: firstString(r, 'imagePullPolicy') ?? UPDATE_APP_SAFE_DEFAULTS.imagePullPolicy,
+      groupType: requireString('groupType'),
+      capacity: requireString('capacity'),
+      capacityLimit: requireString('capacityLimit'),
+      storage: requireNumber('storage'),
+      isEnablePMA: requireBoolean('isEnablePMA'),
+      isEnablePPA: firstBoolean(r, 'isEnablePPA') ?? UPDATE_APP_SAFE_DEFAULTS.isEnablePPA,
+      isEnableEditor: requireBoolean('isEnableEditor'),
+      filePermissionLevel: firstString(r, 'filePermissionLevel') ?? UPDATE_APP_SAFE_DEFAULTS.filePermissionLevel,
+      isEnable: firstBoolean(r, 'isEnable') ?? UPDATE_APP_SAFE_DEFAULTS.isEnable,
+      isEnableBasicAuth: firstBoolean(r, 'isEnableBasicAuth') ?? UPDATE_APP_SAFE_DEFAULTS.isEnableBasicAuth,
+      ipRestrictionSlug: firstString(r, 'ipRestrictionSlug') ?? UPDATE_APP_SAFE_DEFAULTS.ipRestrictionSlug,
+    };
+  }
+
+  // DeactivateLAMAppDTO is an empty schema in the OpenAPI spec (like ActivateLAMAppDTO
+  // was before ACTIVATE_DEFAULTS was captured from a real UI request) -- no real
+  // deactivate request has been captured, so this sends an empty body as a best guess.
+  // Update this once a real request/response is captured -- see README.md.
+  async deactivateApplication(app: ApplicationRef): Promise<ApplicationRef> {
+    this.requireHierarchy(app);
+    const raw = await this.request(
+      apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/deactivate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
+      { method: 'PATCH', body: JSON.stringify({}) },
+    );
+    const initial = this.normalizeApplication(raw, { id: app.id, projectId: app.projectId, workspaceId: app.workspaceId });
+    // Mirrors activateApplication()'s polling: deactivation is presumably also async.
+    return this.pollUntilStatus(app, 'UNDEPLOY_APPLICATION_SUCCESS', initial);
+  }
+
   async listGitOwners(provider = 'GITHUB'): Promise<GitOwnerRef[]> {
     const qs = new URLSearchParams({ gitProvider: provider.toUpperCase(), isUsePersonalToken: '1' });
-    const raw = await this.request(`/api/v2/users/git-owners?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/users/git-owners')}?${qs}`);
     const items = extractItems(raw, 'gitOwners', 'data', 'items');
     return items.map(item => {
       const r = asRecord(item);
@@ -303,7 +501,7 @@ export class RealDevPanelClient implements DevPanelClient {
     const qs = new URLSearchParams({ pageIndex: '1', isUsePersonalToken: '1' });
     if (owner) qs.set('owner', owner);
     qs.set('gitProvider', provider.toUpperCase());
-    const raw = await this.request(`/api/v2/users/repositories?${qs}`);
+    const raw = await this.request(`${apiPath('/api/v2/users/repositories')}?${qs}`);
     const items = extractItems(raw, 'repositories', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {
       return raw.map(item => this.normalizeRepo(item));
@@ -326,9 +524,8 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async listRepositoryBranches(owner: string, repoName: string, repoId: string, provider = 'GITHUB'): Promise<GitBranchRef[]> {
     const encodedOwner = encodeURIComponent(owner);
-    const encodedName = encodeURIComponent(repoName);
-    const encodedId = encodeURIComponent(repoId);
-    const raw = await this.request(`/api/v2/users/repositories/${encodedName}/${encodedId}/branches?gitProvider=${provider.toUpperCase()}&owner=${encodedOwner}&isUsePersonalToken=1`);
+    const path = apiPath('/api/v2/users/repositories/{repoName}/{repoId}/branches', { repoName, repoId });
+    const raw = await this.request(`${path}?gitProvider=${provider.toUpperCase()}&owner=${encodedOwner}&isUsePersonalToken=1`);
     const items = extractItems(raw, 'branches', 'data', 'items');
     if (items.length === 0 && Array.isArray(raw)) {
       return raw.map(item => this.normalizeBranch(item));
@@ -346,14 +543,14 @@ export class RealDevPanelClient implements DevPanelClient {
   }
 
   async setGitToken(token: string, provider: string, username: string): Promise<void> {
-    await this.request('/api/v2/users/gitToken', {
+    await this.request(apiPath('/api/v2/users/gitToken'), {
       method: 'PATCH',
       body: JSON.stringify({ gitProvider: provider.toUpperCase(), username, tokenValue: token }),
     });
   }
 
   async removeGitToken(provider: string): Promise<void> {
-    await this.request('/api/v2/users/gitToken', {
+    await this.request(apiPath('/api/v2/users/gitToken'), {
       method: 'DELETE',
       body: JSON.stringify({ gitProvider: provider.toUpperCase() }),
     });
@@ -361,21 +558,41 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async createBackup(app: ApplicationRef): Promise<BackupRef> {
     this.requireHierarchy(app);
-    const raw = await this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups`, {
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    const raw = await this.request(path, {
       method: 'POST', body: JSON.stringify({ type: 'MANUAL' })
     });
     const r = asRecord(raw);
     return { id: firstString(r, '_id', 'id', 'backupId') ?? 'unknown', applicationId: app.id, createdAt: new Date().toISOString(), type: 'MANUAL', raw };
   }
 
+  // The OpenAPI spec types this as a bodyless PATCH returning 200 with no
+  // content, but that has never been confirmed against a live backend --
+  // DevPanel's UI has no restore feature to capture a real request from, so
+  // (unlike createApplication/activateApplication/getBackupFile) there is no
+  // way to verify this contract until a real restore has been performed.
   async restoreBackup(app: ApplicationRef, backupId: string): Promise<unknown> {
     this.requireHierarchy(app);
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}/backups/${encodeURIComponent(backupId)}/restore`, { method: 'PATCH' });
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/backups/{backupId}/restore', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id, backupId });
+    return this.request(path, { method: 'PATCH' });
   }
 
   async deleteApplication(app: ApplicationRef): Promise<unknown> {
     this.requireHierarchy(app);
-    return this.request(`/api/v2/workspaces/${app.workspaceId}/projects/${app.projectId}/applications/${app.id}`, { method: 'DELETE' });
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id });
+    return this.request(path, { method: 'DELETE' });
+  }
+
+  async deleteProject(project: ProjectRef): Promise<unknown> {
+    if (!project.workspaceId || !project.id) throw new Error(`Project ${project.id} lacks workspaceId required by DevPanel nested endpoints`);
+    const path = apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}', { workspaceId: project.workspaceId, projectId: project.id });
+    return this.request(path, { method: 'DELETE' });
+  }
+
+  async deleteWorkspace(workspace: WorkspaceRef): Promise<unknown> {
+    if (!workspace.id) throw new Error('Workspace id is required to delete a workspace');
+    const path = apiPath('/api/v2/workspaces/{workspaceId}', { workspaceId: workspace.id });
+    return this.request(path, { method: 'DELETE' });
   }
 
   private requireHierarchy(app: ApplicationRef): void {

@@ -88,12 +88,85 @@ export class PlanService {
       ],
       preconditions: snapshot(app),
       expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
-      rollback: 'Undeploy via the DevPanel deactivate endpoint (UI or API); a devpanel_deactivate_application MCP tool is not yet implemented.'
+      rollback: 'Undeploy via devpanel_plan_deactivate_application if rollback is required.'
     });
   }
 
-  async backupPlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
+  async deactivatePlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
+    if (app.status !== 'DEPLOY_APPLICATION_SUCCESS') {
+      if (app.status === 'UNDEPLOY_APPLICATION_SUCCESS') {
+        throw new Error(`Application ${app.name ?? app.id} is already undeployed (UNDEPLOY_APPLICATION_SUCCESS); no deactivation is needed. Verify its status with devpanel_list_applications or devpanel_get_application.`);
+      }
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Deactivation requires status DEPLOY_APPLICATION_SUCCESS; check the current status with devpanel_get_application before retrying.`);
+    }
+    return this.createPlan({
+      action: 'DEACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
+      summary: `Deactivate (undeploy/pause) application ${app.name ?? app.id} from K8s`,
+      target: appSummary(app),
+      proposedInput: appSummary(app),
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in DEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, 'DEACTIVATE_APPLICATION', 'Undeploy the application from Kubernetes via PATCH /deactivate', true),
+        step(3, 'VERIFY_DEACTIVATED', 'Poll application status until it reaches UNDEPLOY_APPLICATION_SUCCESS or fails', false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `Application ${app.name ?? app.id} is undeployed with status UNDEPLOY_APPLICATION_SUCCESS. It no longer serves traffic; storage/data is preserved.`,
+      rollback: 'Re-activate via devpanel_plan_activate_application if rollback is required.'
+    });
+  }
+
+  async enableEditorPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'EDITOR', true);
+  }
+
+  async disableEditorPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'EDITOR', false);
+  }
+
+  async enablePmaPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'PMA', true);
+  }
+
+  async disablePmaPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    return this.toggleFeaturePlan(application, ownerId, workspaceId, 'PMA', false);
+  }
+
+  private async toggleFeaturePlan(application: string, ownerId: string, workspaceId: string | undefined, feature: 'EDITOR' | 'PMA', enabled: boolean): Promise<ChangePlan> {
+    const resolved = await this.resolver.resolve(application, workspaceId);
+    // resolver.resolve() goes through listApplications(), whose raw item shape for
+    // isEnableEditor/isEnablePMA is unconfirmed -- re-fetch via getApplication()'s
+    // single-app GET, which the README confirms exposes these fields, so the
+    // "already enabled/disabled" guard below actually works in real mode.
+    const app = await this.dp.getApplication(resolved);
+    if (app.status !== 'DEPLOY_APPLICATION_SUCCESS') {
+      throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Code server/phpMyAdmin can only be toggled on a deployed application (status DEPLOY_APPLICATION_SUCCESS); activate it first with devpanel_plan_activate_application.`);
+    }
+    const label = feature === 'EDITOR' ? 'Code server' : 'phpMyAdmin';
+    const currentlyEnabled = feature === 'EDITOR' ? app.isEnableEditor : app.isEnablePMA;
+    if (currentlyEnabled === enabled) {
+      throw new Error(`${label} is already ${enabled ? 'enabled' : 'disabled'} on ${app.name ?? app.id}.`);
+    }
+    const action: PlanAction = feature === 'EDITOR' ? (enabled ? 'ENABLE_EDITOR' : 'DISABLE_EDITOR') : (enabled ? 'ENABLE_PMA' : 'DISABLE_PMA');
+    const verb = enabled ? 'Enable' : 'Disable';
+    return this.createPlan({
+      action, risk: 'MEDIUM', ownerId,
+      summary: `${verb} ${label} on ${app.name ?? app.id}`,
+      target: appSummary(app),
+      proposedInput: { ...appSummary(app), enabled },
+      steps: [
+        step(1, 'REVALIDATE', 'Verify application is still in DEPLOY_APPLICATION_SUCCESS status', false),
+        step(2, action, `${verb} ${label} via PATCH (contract not yet verified against a real DevPanel request -- see README.md)`, true),
+        step(3, 'VERIFY', `Confirm ${label} is now ${enabled ? 'enabled' : 'disabled'}`, false),
+      ],
+      preconditions: snapshot(app),
+      expectedResult: `${label} is ${enabled ? 'enabled' : 'disabled'} on ${app.name ?? app.id}.`,
+      rollback: `${enabled ? 'Disable' : 'Enable'} it again via the corresponding devpanel_plan_${enabled ? 'disable' : 'enable'}_${feature === 'EDITOR' ? 'code_server' : 'phpmyadmin'} tool.`,
+    });
+  }
+
+  async backupPlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
     return this.createPlan({
       action: 'BACKUP_APPLICATION', risk: 'LOW', ownerId, summary: `Create a manual backup of ${app.name ?? app.id}`,
       target: appSummary(app), proposedInput: { applicationId: app.id },
@@ -102,27 +175,95 @@ export class PlanService {
     });
   }
 
-  async restorePlan(application: string, backupId?: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
-    const backups = await this.dp.listBackups(app);
-    const selected = backupId ? backups.find(b => b.id === backupId) : backups[0];
-    if (!selected) throw new Error(backupId ? `Backup not found: ${backupId}` : 'No backup exists to restore');
-    return this.createPlan({
-      action: 'RESTORE_APPLICATION', risk: 'HIGH', ownerId, summary: `Restore ${app.name ?? app.id} from backup ${selected.id}`,
-      target: { ...appSummary(app), backupId: selected.id }, proposedInput: { applicationId: app.id, backupId: selected.id },
-      steps: [step(1, 'REVALIDATE', 'Verify application and backup still match the reviewed plan', false), step(2, 'RESTORE_BACKUP', 'Restore the selected backup into the application', true), step(3, 'VERIFY_APPLICATION', 'Read application state after restore', false)],
-      preconditions: { ...snapshot(app), backupId: selected.id }, expectedResult: `Application restored from backup ${selected.id}.`, rollback: 'Create a new backup before restore in a production implementation; restore that safety backup if rollback is required.'
-    });
-  }
-
-  async deletePlan(application: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
-    const app = await this.resolver.resolve(application);
+  async deletePlan(application: string, ownerId = OWNER_ID_LOCAL, workspaceId?: string): Promise<ChangePlan> {
+    const app = await this.resolver.resolve(application, workspaceId);
     const backups = await this.dp.listBackups(app);
     return this.createPlan({
       action: 'DELETE_APPLICATION', risk: 'HIGH', ownerId, summary: `Delete ${app.name ?? app.id}`,
       target: { ...appSummary(app), latestBackup: backups[0]?.id ?? null }, proposedInput: { applicationId: app.id },
       steps: [step(1, 'REVALIDATE', 'Verify target application still matches the reviewed plan', false), step(2, 'DELETE_APPLICATION', 'Delete the DevPanel application', true), step(3, 'VERIFY_DELETED', 'Confirm the application can no longer be resolved', false)],
       preconditions: snapshot(app), expectedResult: 'The selected application no longer exists.', rollback: backups[0] ? `Recovery may be possible from backup ${backups[0].id}, depending on DevPanel retention semantics.` : 'No backup was found; rollback is not guaranteed.',
+    });
+  }
+
+  async deleteProjectPlan(workspaceId: string, project: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const projects = await this.dp.listProjects(workspaceId);
+    const proj = this.resolveOneOrThrow(projects, project, 'Project', ` in workspace ${workspaceId}`);
+    const apps = await this.dp.listProjectApplications(workspaceId, proj.id);
+    return this.deleteHierarchyPlan({
+      kind: 'project', action: 'DELETE_PROJECT', ownerId,
+      entity: proj, children: apps, childKind: 'application',
+      describeChild: a => `${a.name ?? a.hostname ?? a.id} (${a.id})`,
+      childToolHint: 'Delete them first (devpanel_plan_delete_application + devpanel_approve_and_execute_plan for each), then retry devpanel_plan_delete_project.',
+      target: { projectId: proj.id, projectName: proj.name, workspaceId },
+      proposedInput: { projectId: proj.id, workspaceId },
+      preconditions: { projectId: proj.id, workspaceId },
+    });
+  }
+
+  async deleteWorkspacePlan(workspace: string, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
+    const workspaces = await this.dp.listWorkspaces();
+    const ws = this.resolveOneOrThrow(workspaces, workspace, 'Workspace');
+    const projects = await this.dp.listProjects(ws.id);
+    return this.deleteHierarchyPlan({
+      kind: 'workspace', action: 'DELETE_WORKSPACE', ownerId,
+      entity: ws, children: projects, childKind: 'project',
+      describeChild: p => `${p.name} (${p.id})`,
+      childToolHint: 'Delete them first (devpanel_plan_delete_project + devpanel_approve_and_execute_plan for each -- each project must itself have zero applications), then retry devpanel_plan_delete_workspace.',
+      target: { workspaceId: ws.id, workspaceName: ws.name },
+      proposedInput: { workspaceId: ws.id },
+      preconditions: { workspaceId: ws.id },
+    });
+  }
+
+  /** Shared by deleteProjectPlan/deleteWorkspacePlan: resolve exactly one item
+   *  by id (exact) or name (case-insensitive substring), throwing a "no match"
+   *  or "ambiguous, here are the candidates" error otherwise. */
+  private resolveOneOrThrow<T extends { id: string; name?: string }>(items: T[], query: string, label: string, scopeSuffix = ''): T {
+    const exact = items.find(i => i.id === query);
+    const matches = exact ? [exact] : items.filter(i => (i.name ?? '').toLowerCase().includes(query.toLowerCase()));
+    if (matches.length === 0) throw new Error(`No ${label.toLowerCase()} matches "${query}"${scopeSuffix}`);
+    if (matches.length > 1) {
+      const choices = matches.slice(0, 10).map(i => `${i.name} (${i.id})`).join(', ');
+      throw new Error(`${label} query is ambiguous: "${query}"${scopeSuffix}. Matches: ${choices}`);
+    }
+    return matches[0];
+  }
+
+  /** Shared by deleteProjectPlan/deleteWorkspacePlan: block with a clear message
+   *  listing them if the entity still has children, otherwise build the HIGH-risk
+   *  delete plan. Both are "resolve → require empty → delete" plans that only
+   *  differ in entity/child kind and messaging. */
+  private async deleteHierarchyPlan<T extends { id: string; name?: string }, C>(opts: {
+    kind: 'project' | 'workspace';
+    action: PlanAction;
+    ownerId: string;
+    entity: T;
+    children: C[];
+    childKind: string;
+    describeChild: (child: C) => string;
+    childToolHint: string;
+    target: Record<string, unknown>;
+    proposedInput: Record<string, unknown>;
+    preconditions: Preconditions;
+  }): Promise<ChangePlan> {
+    const { kind, entity, children, childKind, describeChild, childToolHint } = opts;
+    const Kind = kind[0].toUpperCase() + kind.slice(1);
+    if (children.length > 0) {
+      const names = children.map(describeChild).join(', ');
+      throw new Error(`${Kind} ${entity.name} (${entity.id}) still has ${children.length} ${childKind}(s): ${names}. ${childToolHint}`);
+    }
+    return this.createPlan({
+      action: opts.action, risk: 'HIGH', ownerId: opts.ownerId, summary: `Delete ${kind} ${entity.name} (${entity.id})`,
+      target: opts.target, proposedInput: opts.proposedInput,
+      steps: [
+        step(1, 'REVALIDATE', `Verify the ${kind} still has zero ${childKind}s`, false),
+        step(2, opts.action, `Delete the DevPanel ${kind}`, true),
+        step(3, 'VERIFY_DELETED', `Confirm the ${kind} no longer appears in devpanel_list_${kind}s`, false),
+      ],
+      preconditions: opts.preconditions,
+      expectedResult: `${Kind} ${entity.name} no longer exists.`,
+      rollback: `No undo; ${kind} deletion is permanent.`,
     });
   }
 

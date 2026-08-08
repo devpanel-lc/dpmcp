@@ -65,11 +65,42 @@ const grants = new Map<string, StoredGrant>();
 const refreshToAccess = new Map<string, string>();
 const pendingConsent = new Map<string, PendingConsent>();
 
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * codes/grants/pendingConsent only get pruned when something happens to look
+ * them up (a token verify, a consent POST); an abandoned OAuth attempt or an
+ * unused expired code/grant otherwise sits in memory until the process
+ * restarts. Sweep periodically instead. `clients` (RFC 7591 dynamic
+ * registrations) are intentionally NOT swept -- they have no TTL by design.
+ */
+function sweepExpired(): void {
+  const now = Date.now();
+  for (const [code, stored] of codes) if (stored.expiresAt < now) codes.delete(code);
+  for (const [token, grant] of grants) if (grant.expiresAt < now) grants.delete(token);
+  for (const [refreshToken, accessId] of refreshToAccess) if (!grants.has(accessId)) refreshToAccess.delete(refreshToken);
+  for (const [token, pending] of pendingConsent) if (pending.expiresAt < now) pendingConsent.delete(token);
+}
+
+/** Call once when the http transport starts. Matches session.ts's startAutoRefresh() pattern. */
+export function startOAuthMapSweep(): NodeJS.Timeout {
+  const timer = setInterval(sweepExpired, SWEEP_INTERVAL_MS);
+  timer.unref();
+  return timer;
+}
+
 function newToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
 export class McpOAuthProvider implements OAuthServerProvider {
+  /** Optional shared bearer token for off mode (no OAuth dance). Empty in sso mode. */
+  private readonly staticToken: string;
+
+  constructor(staticToken?: string) {
+    this.staticToken = staticToken ?? '';
+  }
+
   /** Read + dynamic registration (RFC 7591) of MCP clients (opencode etc.). */
   readonly clientsStore: OAuthRegisteredClientsStore = {
     getClient(clientId: string): OAuthClientInformationFull | undefined {
@@ -82,12 +113,25 @@ export class McpOAuthProvider implements OAuthServerProvider {
   };
 
   /**
-   * Entry point of the MCP OAuth flow. A human must be signed in to DevPanel
-   * (server-side Cognito session) before consenting: without a session we send
-   * the browser to /login?next=… so the consent step happens after sign-in.
-   * With a session we render the consent page directly.
+   * Entry point of the MCP OAuth flow. Only meaningful in sso mode, where a
+   * human must be signed in to DevPanel (server-side Cognito session) before
+   * consenting: without a session we send the browser to /login?next=… so
+   * the consent step happens after sign-in. In off/token mode this flow is
+   * refused entirely -- off mode is gated by a static bearer
+   * (DP_MCP_BEARER_TOKEN) and token mode forwards each client's own DevPanel
+   * token directly; minting an OAuth grant in either mode would bypass the
+   * static-bearer gate (off) or hand out a token that isn't a real DevPanel
+   * credential (token), so there is nothing safe for this flow to grant.
    */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+    if (config.authMode !== 'sso') {
+      const url = new URL(params.redirectUri);
+      url.searchParams.set('error', 'unauthorized_client');
+      url.searchParams.set('error_description', 'This server only supports the OAuth flow in DP_AUTH_MODE=sso. Use the static bearer token (off mode) or send your own DevPanel access token directly (token mode).');
+      if (params.state) url.searchParams.set('state', params.state);
+      res.redirect(302, url.toString());
+      return;
+    }
     if (!getSession()) {
       const next = buildAuthorizeNextUrl(client, params);
       res.redirect(302, `/login?next=${encodeURIComponent(next)}`);
@@ -199,6 +243,32 @@ export class McpOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    if (this.staticToken && token === this.staticToken) {
+      return {
+        token,
+        clientId: 'static-token',
+        scopes: [],
+        expiresAt: Math.floor((Date.now() + ACCESS_TOKEN_TTL_MS) / 1000),
+      };
+    }
+    if (config.authMode === 'token') {
+      // Bring-your-own-token: this server has no shared secret to compare
+      // against. The bearer is forwarded to DevPanel as-is per session;
+      // DevPanel itself rejects invalid tokens on the first real API call.
+      return {
+        token,
+        clientId: 'byot',
+        scopes: [],
+        expiresAt: Math.floor((Date.now() + ACCESS_TOKEN_TTL_MS) / 1000),
+      };
+    }
+    if (config.authMode !== 'sso') {
+      // off mode: authorize() refuses the OAuth flow entirely (see above), so
+      // grants should always be empty here -- reject explicitly rather than
+      // falling through to the grants lookup, as defense in depth against a
+      // future change accidentally re-opening that path.
+      throw new InvalidTokenError('Invalid access token');
+    }
     const grant = grants.get(token);
     if (!grant) throw new InvalidTokenError('Invalid access token');
     if (grant.expiresAt < Date.now()) {

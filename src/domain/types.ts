@@ -1,3 +1,8 @@
+// These Ref types are hand-curated, not generated. devpanel-openapi.json defines request
+// DTOs only (components/schemas/*DTO) -- it has no response schemas for Workspace,
+// Application, Project, Backup, etc. RealDevPanelClient's normalize* functions must stay
+// defensive at runtime regardless of what any generated types say. See src/generated/.
+
 export type PlanStatus =
   | 'DRAFT'
   | 'READY_FOR_REVIEW'
@@ -16,10 +21,17 @@ export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 export type PlanAction =
   | 'CREATE_APPLICATION'
   | 'ACTIVATE_APPLICATION'
+  | 'DEACTIVATE_APPLICATION'
   | 'BACKUP_APPLICATION'
   | 'RESTORE_APPLICATION'
   | 'DELETE_APPLICATION'
-  | 'CREATE_WORKSPACE';
+  | 'DELETE_PROJECT'
+  | 'CREATE_WORKSPACE'
+  | 'DELETE_WORKSPACE'
+  | 'ENABLE_EDITOR'
+  | 'DISABLE_EDITOR'
+  | 'ENABLE_PMA'
+  | 'DISABLE_PMA';
 
 export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
 
@@ -117,6 +129,8 @@ export interface ApplicationRef {
   hostname?: string;
   status?: string;
   originBranch?: string;
+  isEnableEditor?: boolean;
+  isEnablePMA?: boolean;
   raw?: unknown;
 }
 
@@ -125,6 +139,14 @@ export interface BackupRef {
   applicationId: string;
   createdAt?: string;
   type?: string;
+  raw?: unknown;
+}
+
+export interface BackupFileRef {
+  backupId: string;
+  fileId: string;
+  downloadURL: string;
+  downloadPgsqlURL?: string;
   raw?: unknown;
 }
 

@@ -6,8 +6,8 @@ import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
 import { ApprovalService } from '../src/approval/approval-service.js';
 import { hashPlan } from '../src/utils/hash.js';
-import { currentOwnerId, TokenScopedDevPanelClient } from '../src/clients/token-scoped-client.js';
-import { clearSession, saveSession } from '../src/auth/session.js';
+import { TokenScopedDevPanelClient } from '../src/clients/token-scoped-client.js';
+import { clearSession, getOwnerId, saveSession } from '../src/auth/session.js';
 import type { ChangePlan } from '../src/domain/types.js';
 import { config } from '../src/config.js';
 
@@ -282,6 +282,51 @@ describe('plan hash integrity', () => {
   });
 });
 
+describe('workspace scoping', () => {
+  it('backupPlan and deletePlan respect an explicit workspaceId', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const backup = await plans.backupPlan('app_demo_1', 'local', 'ws_mock_1');
+    expect(backup.action).toBe('BACKUP_APPLICATION');
+    await expect(plans.backupPlan('app_demo_1', 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+
+    const del = await plans.deletePlan('app_demo_1', 'local', 'ws_mock_1');
+    expect(del.action).toBe('DELETE_APPLICATION');
+    await expect(plans.deletePlan('app_demo_1', 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+  });
+
+  it('ApplicationResolver detects cross-workspace name ambiguity instead of silently picking one', async () => {
+    const appJson = (id: string, wsId: string) => ({
+      _id: id, name: 'api', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: wsId } },
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.includes('/workspaces?')) {
+        return { ok: true, text: async () => JSON.stringify({ workspaces: [{ _id: 'ws_a', name: 'A' }, { _id: 'ws_b', name: 'B' }] }) };
+      }
+      if (path.includes('/workspaces/ws_a/applications')) {
+        return { ok: true, text: async () => JSON.stringify({ applications: [appJson('app_a', 'ws_a')] }) };
+      }
+      if (path.includes('/workspaces/ws_b/applications')) {
+        return { ok: true, text: async () => JSON.stringify({ applications: [appJson('app_b', 'ws_b')] }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const dp = new RealDevPanelClient('test-token');
+      const store = new InMemoryPlanStore();
+      const plans = new PlanService(dp, store);
+      await expect(plans.backupPlan('api')).rejects.toThrow('ambiguous across workspaces');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('session-scoped client and owner identity', () => {
   const testSession = {
     accessToken: 'access-token-1',
@@ -300,25 +345,41 @@ describe('session-scoped client and owner identity', () => {
     clearSession();
   });
 
-  it('currentOwnerId() returns "local" with no session', () => {
-    expect(currentOwnerId()).toBe('local');
+  it('getOwnerId() returns "local" with no session', () => {
+    expect(getOwnerId()).toBe('local');
   });
 
-  it('currentOwnerId() returns the Cognito sub from the session', () => {
+  it('getOwnerId() returns the Cognito sub from the session', () => {
     saveSession(testSession);
-    expect(currentOwnerId()).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
+    expect(getOwnerId()).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
-  it('currentOwnerId() is consistent across calls for the same session', () => {
+  it('getOwnerId() is consistent across calls for the same session', () => {
     saveSession(testSession);
-    expect(currentOwnerId()).toBe(currentOwnerId());
+    expect(getOwnerId()).toBe(getOwnerId());
   });
 
-  it('currentOwnerId() returns a different owner for a different session', () => {
+  it('getOwnerId() returns a different owner for a different session', () => {
     saveSession(testSession);
-    const idA = currentOwnerId();
+    const idA = getOwnerId();
     saveSession({ ...testSession, sub: 'other-sub-456' });
-    expect(idA).not.toBe(currentOwnerId());
+    expect(idA).not.toBe(getOwnerId());
+  });
+
+  it('RealDevPanelClient.getCallerIdentity() isolates different bearer tokens from each other (token mode)', () => {
+    const alice = new RealDevPanelClient('alice-devpanel-token', false, 'test');
+    const bob = new RealDevPanelClient('bob-devpanel-token', false, 'test');
+    const aliceAgain = new RealDevPanelClient('alice-devpanel-token', false, 'test');
+
+    expect(alice.getCallerIdentity()).not.toBe(bob.getCallerIdentity());
+    expect(alice.getCallerIdentity()).toBe(aliceAgain.getCallerIdentity());
+    expect(alice.getCallerIdentity()).not.toContain('alice-devpanel-token');
+  });
+
+  it('RealDevPanelClient.getCallerIdentity() uses the Cognito sub in sso mode', () => {
+    saveSession(testSession);
+    const client = new RealDevPanelClient('sso-access-token', true, 'test');
+    expect(client.getCallerIdentity()).toBe(testSession.sub);
   });
 
   it('TokenScopedDevPanelClient falls back to mock in mock mode', async () => {
@@ -333,7 +394,7 @@ describe('session-scoped client and owner identity', () => {
     const store = new InMemoryPlanStore();
     const plans = new PlanService(dp, store);
 
-    const plan = await plans.backupPlan('app_demo_1', currentOwnerId());
+    const plan = await plans.backupPlan('app_demo_1', getOwnerId());
     expect(plan.ownerId).toBe('c979c90e-9081-7091-a748-b2e15604c2ef');
   });
 
@@ -383,6 +444,45 @@ describe('discovery methods', () => {
     const apps = await dp.listProjectApplications('ws_mock_1', 'project_demo_1');
     expect(apps.length).toBeGreaterThan(0);
     expect(apps[0].projectId).toBe('project_demo_1');
+  });
+
+  it('whoami returns a mock profile', async () => {
+    const dp = new MockDevPanelClient();
+    const profile = await dp.whoami();
+    expect(profile).toHaveProperty('email');
+  });
+
+  it('real client whoami calls GET /api/v2/users/profile', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toContain('/api/v2/users/profile');
+      return { ok: true, text: async () => JSON.stringify({ email: 'real-user@example.com' }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const profile = await client.whoami();
+      expect(profile).toEqual({ email: 'real-user@example.com' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('getBackupFile', () => {
+  it('returns an absolute download URL for an existing backup', async () => {
+    const dp = new MockDevPanelClient();
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    const backup = await dp.createBackup(app);
+    const file = await dp.getBackupFile(app, backup.id, 'file_1');
+    expect(file.backupId).toBe(backup.id);
+    expect(file.fileId).toBe('file_1');
+    expect(file.downloadURL).toMatch(/^https:\/\//);
+  });
+
+  it('throws for an unknown backupId', async () => {
+    const dp = new MockDevPanelClient();
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    await expect(dp.getBackupFile(app, 'nonexistent', 'file_1')).rejects.toThrow('Backup not found');
   });
 });
 
@@ -489,6 +589,368 @@ describe('activate flow', () => {
     expect(plan.summary).toContain('Test App');
     const noteStep = plan.steps.find(s => s.operation === 'NOTE_ACTIVATE');
     expect(noteStep).toBeDefined();
+  });
+});
+
+describe('deactivate flow', () => {
+  it('creates a deactivate plan and executes it', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.deactivatePlan('app_demo_1');
+
+    expect(plan.action).toBe('DEACTIVATE_APPLICATION');
+    expect(plan.steps.length).toBeGreaterThan(0);
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.status).toBe('UNDEPLOY_APPLICATION_SUCCESS');
+  });
+
+  it('rejects deactivate when app is already undeployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deactivatePlan('app_demo_1')).rejects.toThrow('already undeployed (UNDEPLOY_APPLICATION_SUCCESS); no deactivation is needed');
+  });
+
+  it('deactivatePlan scopes resolution to the given workspace', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.deactivatePlan('app_demo_1', 'local', 'ws_mock_1');
+    expect(plan.action).toBe('DEACTIVATE_APPLICATION');
+
+    await expect(plans.deactivatePlan('app_demo_1', 'local', 'ws_nonexistent')).rejects.toThrow('No application matches');
+  });
+
+  it('real client deactivateApplication polls until UNDEPLOY_APPLICATION_SUCCESS', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    const appJson = (status: string) => ({ _id: 'app_1', status, project: { _id: 'p_1', workspace: { _id: 'ws_1' } } });
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith('/deactivate')) {
+        return { ok: true, text: async () => JSON.stringify(appJson('DEACTIVATING')) };
+      }
+      polls += 1;
+      return { ok: true, text: async () => JSON.stringify({ items: [appJson(polls === 1 ? 'DEACTIVATING' : 'UNDEPLOY_APPLICATION_SUCCESS')] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const promise = client.deactivateApplication({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' });
+      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result.status).toBe('UNDEPLOY_APPLICATION_SUCCESS');
+      expect(polls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('delete project flow', () => {
+  it('blocks deleting a project that still has applications', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteProjectPlan('ws_mock_1', 'project_demo_1'))
+      .rejects.toThrow(/still has 1 application\(s\).*Existing Demo.*devpanel_plan_delete_application/s);
+  });
+
+  it('creates a delete project plan and executes it once the project has no applications', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+
+    const plan = await plans.deleteProjectPlan('ws_mock_1', 'project_demo_1');
+    expect(plan.action).toBe('DELETE_PROJECT');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const projects = await dp.listProjects('ws_mock_1');
+    expect(projects.find(p => p.id === 'project_demo_1')).toBeUndefined();
+  });
+
+  it('resolves the project by name as well as id', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+
+    const plan = await plans.deleteProjectPlan('ws_mock_1', 'Demo Project');
+    expect(plan.target.projectId).toBe('project_demo_1');
+  });
+
+  it('rejects when no project matches the query', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteProjectPlan('ws_mock_1', 'nonexistent')).rejects.toThrow('No project matches');
+  });
+});
+
+describe('delete workspace flow', () => {
+  it('blocks deleting a workspace that still has projects', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteWorkspacePlan('ws_mock_1'))
+      .rejects.toThrow(/still has 1 project\(s\).*Demo Project.*devpanel_plan_delete_project/s);
+  });
+
+  it('creates a delete workspace plan and executes it once the workspace has no projects', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    await dp.deleteProject({ id: 'project_demo_1', workspaceId: 'ws_mock_1', name: 'Demo Project' });
+
+    const plan = await plans.deleteWorkspacePlan('ws_mock_1');
+    expect(plan.action).toBe('DELETE_WORKSPACE');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const workspaces = await dp.listWorkspaces();
+    expect(workspaces.find(w => w.id === 'ws_mock_1')).toBeUndefined();
+  });
+
+  it('resolves the workspace by name as well as id', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await dp.deleteApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    await dp.deleteProject({ id: 'project_demo_1', workspaceId: 'ws_mock_1', name: 'Demo Project' });
+
+    const plan = await plans.deleteWorkspacePlan('Default Workspace');
+    expect(plan.target.workspaceId).toBe('ws_mock_1');
+  });
+
+  it('rejects when no workspace matches the query', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.deleteWorkspacePlan('nonexistent')).rejects.toThrow('No workspace matches');
+  });
+});
+
+describe('editor/PMA toggle flow', () => {
+  it('blocks toggling code server on an application that is not deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    await expect(plans.enableEditorPlan('app_demo_1')).rejects.toThrow('can only be toggled on a deployed application');
+  });
+
+  it('enables code server and executes it once the application is deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+
+    await dp.activateApplication(
+      { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' },
+      { groupType: 'on-demand', capacity: 'micro' },
+    );
+
+    const plan = await plans.enableEditorPlan('app_demo_1');
+    expect(plan.action).toBe('ENABLE_EDITOR');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' });
+    expect(app.isEnableEditor).toBe(true);
+  });
+
+  it('rejects enabling code server when it is already enabled', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const app = { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' };
+
+    await dp.activateApplication(app, { groupType: 'on-demand', capacity: 'micro' });
+    await dp.setEditorEnabled(app, true);
+
+    await expect(plans.enableEditorPlan('app_demo_1')).rejects.toThrow('already enabled');
+  });
+
+  it('disables phpMyAdmin and executes it once the application is deployed', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+    const executor = new ExecutionService(dp, store);
+    const app = { id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'ws_mock_1' };
+
+    await dp.activateApplication(app, { groupType: 'on-demand', capacity: 'micro' });
+    await dp.setPmaEnabled(app, true);
+
+    const plan = await plans.disablePmaPlan('app_demo_1');
+    expect(plan.action).toBe('DISABLE_PMA');
+
+    await store.setApproval(plan.id, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+    });
+    const approvedPlan = await store.get(plan.id)!;
+    const result = await executor.executeApprovedPlan(approvedPlan!);
+    expect(result.state).toBe('EXECUTED');
+
+    const updated = await dp.getApplication(app);
+    expect(updated.isEnablePMA).toBe(false);
+  });
+
+  it('real client setEditorEnabled reads current app config then PATCHes /update with one field flipped', async () => {
+    let patchBody: Record<string, unknown> | undefined;
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      containerImage: 'devpanel/php:8.4-base', groupType: 'on-demand', capacity: 'micro',
+      capacityLimit: 'small_1', storage: 5, isEnableEditor: false, isEnablePMA: false,
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/update')) {
+        patchBody = JSON.parse(String(init?.body));
+        return { ok: true, text: async () => JSON.stringify({ ...appJson, isEnableEditor: true }) };
+      }
+      return { ok: true, text: async () => JSON.stringify(appJson) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      const result = await client.setEditorEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true);
+      expect(patchBody?.isEnableEditor).toBe(true);
+      expect(patchBody?.containerImage).toBe('devpanel/php:8.4-base');
+      expect(patchBody?.capacity).toBe('micro');
+      expect(patchBody?.capacityLimit).toBe('small_1');
+      expect(patchBody?.storage).toBe(5);
+      expect(result.isEnableEditor).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('real client setPmaEnabled throws clearly when a required field is missing from the live application state', async () => {
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      // containerImage/groupType/capacity/capacityLimit/storage intentionally absent
+    };
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify(appJson) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      await expect(client.setPmaEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true))
+        .rejects.toThrow('current "containerImage" could not be read');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('real client setEditorEnabled throws rather than silently disabling PMA when isEnablePMA cannot be read live', async () => {
+    const appJson = {
+      _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+      project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+      containerImage: 'devpanel/php:8.4-base', groupType: 'on-demand', capacity: 'micro',
+      capacityLimit: 'small_1', storage: 5, isEnableEditor: false,
+      // isEnablePMA intentionally omitted -- must NOT silently default to false
+    };
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify(appJson) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new RealDevPanelClient('test-token');
+      await expect(client.setEditorEnabled({ id: 'app_1', projectId: 'p_1', workspaceId: 'ws_1' }, true))
+        .rejects.toThrow('current "isEnablePMA" could not be read');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('detects "already enabled" via getApplication(), not the unconfirmed list-endpoint shape', async () => {
+    // The list endpoint (used by ApplicationResolver) omits isEnableEditor/isEnablePMA
+    // here, mirroring the real, unconfirmed response shape; only the single-app GET
+    // (used explicitly by toggleFeaturePlan) includes them.
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/applications/app_1')) {
+        return {
+          ok: true, text: async () => JSON.stringify({
+            _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS',
+            project: { _id: 'p_1', workspace: { _id: 'ws_1' } },
+            isEnableEditor: true, isEnablePMA: false,
+          }),
+        };
+      }
+      return {
+        ok: true, text: async () => JSON.stringify({
+          applications: [{ _id: 'app_1', status: 'DEPLOY_APPLICATION_SUCCESS', project: { _id: 'p_1', workspace: { _id: 'ws_1' } } }],
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const dp = new RealDevPanelClient('test-token');
+      const store = new InMemoryPlanStore();
+      const plans = new PlanService(dp, store);
+      await expect(plans.enableEditorPlan('app_1', 'local', 'ws_1')).rejects.toThrow('already enabled');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

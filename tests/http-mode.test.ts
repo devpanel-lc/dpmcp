@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { config } from '../src/config.js';
 import { startHttpServer } from '../src/http-server.js';
-import { buildServer } from '../src/server.js';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
+import { RealDevPanelClient } from '../src/clients/real-devpanel.js';
+import type { DevPanelClientFactory } from '../src/clients/devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
 import { clearSession, saveSession } from '../src/auth/session.js';
 import { generatePkce } from '../src/auth/cognito.js';
@@ -46,14 +47,13 @@ async function reservePort(): Promise<number> {
   return port;
 }
 
-async function startApp(): Promise<TestCtx> {
+async function startApp(dpFactory: DevPanelClientFactory = () => new MockDevPanelClient()): Promise<TestCtx> {
   const store = new InMemoryPlanStore();
   const port = await reservePort();
   config.httpPort = port;
   config.publicBaseUrl = `http://127.0.0.1:${port}`;
   config.approvalPublicBaseUrl = config.publicBaseUrl;
-  const mcpServer = buildServer(new MockDevPanelClient(), store);
-  const server = await startHttpServer(mcpServer, store);
+  const server = await startHttpServer(dpFactory, store);
   return {
     base: config.publicBaseUrl,
     store,
@@ -155,6 +155,9 @@ beforeEach(() => {
   config.mode = 'mock';
   config.transport = 'http';
   config.approvalMode = 'auto';
+  // OAuth-dance tests assert the no-session → /login redirect, which only
+  // applies in sso mode. Off-mode behavior is covered by dedicated tests.
+  config.authMode = 'sso';
   config.cognito.clientId = 'test-cognito-client';
   config.cognito.domain = 'http://cognito.test';
   config.cognito.clientSecret = '';
@@ -170,8 +173,30 @@ afterEach(async () => {
   config.publicBaseUrl = '';
   config.approvalPublicBaseUrl = 'http://127.0.0.1:8787';
   config.httpPort = 3000;
+  config.mcpBearerToken = '';
+  config.authMode = 'off';
+  config.mode = 'mock';
+  config.apiBaseUrl = 'http://localhost.invalid';
+  vi.unstubAllGlobals();
   clearSession();
 });
+
+interface DevPanelCall { url: string; init?: RequestInit }
+
+/** Stubs global fetch for DevPanel-bound calls (matching config.apiBaseUrl) while
+ *  letting the test's own calls to the local http server through untouched. */
+function stubDevPanelFetch(handler: (call: DevPanelCall) => { ok: boolean; status?: number; text: () => Promise<string> }) {
+  const realFetch = globalThis.fetch;
+  const fn = vi.fn(async (url: unknown, init?: RequestInit) => {
+    if (String(url).startsWith(config.apiBaseUrl)) {
+      const result = handler({ url: String(url), init });
+      return { ok: result.ok, status: result.status ?? (result.ok ? 200 : 401), text: result.text } as Response;
+    }
+    return realFetch(url as string, init);
+  });
+  vi.stubGlobal('fetch', fn);
+  return fn;
+}
 
 describe('http transport server', () => {
   it('serves /healthz and rejects unknown Host headers', async () => {
@@ -277,6 +302,263 @@ describe('http transport server', () => {
     });
     expect(revoke.status).toBe(200);
     expect((await withToken(rotated.access_token)).status).toBe(401);
+  });
+
+  it('supports multiple sequential sessions on the same server', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${tokens.access}`,
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    };
+
+    const initPayload = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+    });
+
+    // Session 1: initialize
+    const s1 = await fetch(`${ctx.base}/mcp`, { method: 'POST', headers, body: initPayload });
+    expect(s1.status).toBe(200);
+    const s1Id = s1.headers.get('mcp-session-id');
+    expect(s1Id).toBeTruthy();
+
+    // Session 2: initialize (new session)
+    const s2 = await fetch(`${ctx.base}/mcp`, { method: 'POST', headers, body: initPayload });
+    expect(s2.status).toBe(200);
+    const s2Id = s2.headers.get('mcp-session-id');
+    expect(s2Id).toBeTruthy();
+
+    // Sessions have distinct IDs
+    expect(s2Id).not.toBe(s1Id);
+
+    // Session 1 is still usable after session 2
+    const reuse = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { ...headers, 'mcp-session-id': s1Id! },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(reuse.status).toBe(200);
+  });
+
+  it('a session created via POST is reachable via DELETE (shared session map across verbs)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const init = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${tokens.access}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    // Before the fix, POST/GET/DELETE each had their own private sessions Map,
+    // so DELETE (issued by a different app.delete('/mcp', ...) handler
+    // instance) would never find a session created via POST -- 404.
+    const del = await fetch(`${ctx.base}/mcp`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${tokens.access}`, 'mcp-session-id': sessionId! },
+    });
+    expect(del.status).not.toBe(404);
+  });
+
+  it('rejects a POST to /mcp with a non-JSON content-type (415)', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const tokens = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const res = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tokens.access}`, 'content-type': 'text/plain' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it('accepts the static bearer token in off mode', async () => {
+    config.mcpBearerToken = 'test-static-token';
+    ctx = await startApp();
+
+    const noToken = await fetch(`${ctx.base}/mcp`, { method: 'POST', body: '{}' });
+    expect(noToken.status).toBe(401);
+
+    const wrongToken = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer definitely-wrong' },
+      body: '{}',
+    });
+    expect(wrongToken.status).toBe(401);
+
+    // Correct static token passes auth; 400 = missing initialize, not 401.
+    const rightToken = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer test-static-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'nope' }),
+    });
+    expect(rightToken.status).toBe(400);
+  });
+
+  it('runs a full MCP session over the static bearer token', async () => {
+    config.mcpBearerToken = 'test-static-token';
+    ctx = await startApp();
+
+    const headers: Record<string, string> = {
+      authorization: 'Bearer test-static-token',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    };
+
+    const init = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const list = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { ...headers, 'mcp-session-id': sessionId! },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(list.status).toBe(200);
+  });
+
+  it('refuses the OAuth dance entirely in off mode -- the static bearer is the only way in', async () => {
+    config.authMode = 'off';
+    const c = await startApp();
+    ctx = c;
+    const clientId = await registerClient(c.base);
+    const { challenge } = generatePkce();
+
+    // Minting an OAuth grant in off mode would bypass the static-bearer gate
+    // (a shared secret this server actually enforces there) -- /authorize
+    // must refuse outright, with or without a Cognito session, instead of
+    // rendering consent.
+    const authorizeRes = await fetch(
+      `${c.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&state=s2`,
+      { redirect: 'manual' },
+    );
+    expect(authorizeRes.status).toBe(302);
+    const location = new URL(authorizeRes.headers.get('location') ?? '');
+    expect(location.origin + location.pathname).toBe('http://127.0.0.1:9999/callback');
+    expect(location.searchParams.get('error')).toBe('unauthorized_client');
+    expect(location.searchParams.get('state')).toBe('s2');
+    expect(location.searchParams.get('code')).toBeNull();
+  });
+
+  it('refuses the OAuth dance entirely in token mode too', async () => {
+    config.mode = 'real';
+    config.authMode = 'token';
+    config.apiBaseUrl = 'http://devpanel.test';
+    const dpFactory: DevPanelClientFactory = (token) => new RealDevPanelClient(token ?? '', false, 'test');
+    const c = await startApp(dpFactory);
+    ctx = c;
+    const clientId = await registerClient(c.base);
+    const { challenge } = generatePkce();
+
+    const authorizeRes = await fetch(
+      `${c.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&state=s3`,
+      { redirect: 'manual' },
+    );
+    expect(authorizeRes.status).toBe(302);
+    const location = new URL(authorizeRes.headers.get('location') ?? '');
+    expect(location.searchParams.get('error')).toBe('unauthorized_client');
+    expect(location.searchParams.get('code')).toBeNull();
+  });
+
+  it('forwards each session\'s own bearer token to DevPanel in token mode (no shared secret)', async () => {
+    config.mode = 'real';
+    config.authMode = 'token';
+    config.apiBaseUrl = 'http://devpanel.test';
+    const upstreamAuthHeaders: string[] = [];
+    stubDevPanelFetch((call) => {
+      upstreamAuthHeaders.push((call.init?.headers as Record<string, string>)?.authorization ?? '');
+      return { ok: true, text: async () => JSON.stringify({ workspaces: [] }) };
+    });
+
+    const dpFactory: DevPanelClientFactory = (token) => new RealDevPanelClient(token ?? '', false, 'test');
+    ctx = await startApp(dpFactory);
+
+    const initFor = (token: string) =>
+      fetch(`${ctx!.base}/mcp`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+        }),
+      });
+
+    const callTool = (token: string, sessionId: string) =>
+      fetch(`${ctx!.base}/mcp`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'devpanel_list_workspaces', arguments: {} } }),
+      });
+
+    // Two different MCP clients, each with their own DevPanel token — no
+    // DP_MCP_BEARER_TOKEN or DP_ACCESS_TOKEN configured anywhere on the server.
+    const sessionA = await initFor('alice-devpanel-token');
+    expect(sessionA.status).toBe(200);
+    const sessionAId = sessionA.headers.get('mcp-session-id')!;
+
+    const sessionB = await initFor('bob-devpanel-token');
+    expect(sessionB.status).toBe(200);
+    const sessionBId = sessionB.headers.get('mcp-session-id')!;
+
+    expect((await callTool('alice-devpanel-token', sessionAId)).status).toBe(200);
+    expect((await callTool('bob-devpanel-token', sessionBId)).status).toBe(200);
+
+    expect(upstreamAuthHeaders).toEqual(['Bearer alice-devpanel-token', 'Bearer bob-devpanel-token']);
+  });
+
+  it('rejects a bearer with the wrong format in token mode (still requires "Bearer <token>")', async () => {
+    config.mode = 'real';
+    config.authMode = 'token';
+    const dpFactory: DevPanelClientFactory = (token) => new RealDevPanelClient(token ?? '', false, 'test');
+    ctx = await startApp(dpFactory);
+
+    const noPrefix = await fetch(`${ctx.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'raw-token-without-bearer-prefix', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(noPrefix.status).toBe(401);
+
+    const noHeader = await fetch(`${ctx.base}/mcp`, { method: 'POST', body: '{}' });
+    expect(noHeader.status).toBe(401);
   });
 
   it('falls back to the external review URL when approval is requested over http', async () => {
