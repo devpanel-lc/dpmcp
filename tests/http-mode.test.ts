@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { config } from '../src/config.js';
 import { startHttpServer } from '../src/http-server.js';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
@@ -619,7 +622,9 @@ describe('http transport server', () => {
     ) as { plan: { id: string } };
     expect(createdText.plan.id).toBeTruthy();
 
-    // Approval: native elicitation is unsupported over http → external review URL.
+    // This test's initialize() declares no capabilities, so the SDK's elicitInput()
+    // rejects (client doesn't support form/url elicitation) → external review URL.
+    // A client that DOES declare elicitation support is covered by the next test.
     const approved = await mcp(init.sessionId, {
       jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name: 'devpanel_approve_and_execute_plan', arguments: { planId: createdText.plan.id } },
@@ -629,6 +634,44 @@ describe('http transport server', () => {
     ) as { state: string; approval_url: string };
     expect(approveText.state).toBe('APPROVAL_REQUIRED');
     expect(approveText.approval_url).toBe(`${ctx.base}/review/${createdText.plan.id}`);
+  });
+
+  it('uses native form elicitation over http instead of the external URL, when the client declares support', async () => {
+    const c = await startApp();
+    ctx = c;
+    const clientId = await registerClient(c.base);
+    const { code, verifier } = await authorizeAndConsent(c.base, clientId);
+    const tokens = await exchangeCode(c.base, clientId, code, verifier);
+
+    const client = new Client(
+      { name: 'test-elicitation-client', version: '1.0.0' },
+      { capabilities: { elicitation: { form: {} } } },
+    );
+    client.setRequestHandler(ElicitRequestSchema, async () => ({
+      action: 'accept',
+      content: { confirm: true },
+    }));
+    const transport = new StreamableHTTPClientTransport(new URL(`${c.base}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${tokens.access}` } },
+    });
+    await client.connect(transport);
+
+    const created = await client.callTool({
+      name: 'devpanel_plan_create_application',
+      arguments: { name: 'demo', repositoryOwner: 'acme', repositoryName: 'demo-repo', projectType: 'drupal11_v2' },
+    });
+    const createdText = JSON.parse((created.content as Array<{ text: string }>)[0].text) as { plan: { id: string } };
+    expect(createdText.plan.id).toBeTruthy();
+
+    const approved = await client.callTool({
+      name: 'devpanel_approve_and_execute_plan',
+      arguments: { planId: createdText.plan.id },
+    });
+    const approveText = JSON.parse((approved.content as Array<{ text: string }>)[0].text) as { state: string };
+    // Approved and executed inline via the elicitation dialog — no external review URL involved.
+    expect(approveText.state).toBe('EXECUTED');
+
+    await client.close();
   });
 
   it('serves the external review UI and records approval', async () => {
