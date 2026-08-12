@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { config } from '../config.js';
-import { buildAuthorizeUrl, buildState, decodeState, exchangeCodeForTokens, generatePkce } from './cognito.js';
+import { buildAuthorizeUrl, buildState, exchangeCodeForTokens, generatePkce } from './cognito.js';
+import { takeAuthorizeContinuation } from './mcp-oauth.js';
 import { clearSession, getSession, setLoginUrl, storeTokensFromCognito } from './session.js';
 
 /**
@@ -19,11 +20,38 @@ interface Pending {
   codeVerifier: string;
   /** Where to send the browser after a successful login (http mode only). */
   next?: string;
+  expiresAt: number;
 }
 
 let server: Server | null = null;
 let ipv6Server: Server | null = null;
-let pending: Pending | null = null;
+
+/**
+ * In-flight login attempts, keyed by OAuth `state`.
+ *
+ * A Map rather than a single slot: two MCP clients can be signing in at once
+ * (each bounced here by its own /authorize), and a single global would let the
+ * second attempt overwrite the first's state/codeVerifier — the first callback
+ * would then fail the CSRF check and that client would hang forever waiting
+ * for a code that never arrives.
+ */
+const pendingLogins = new Map<string, Pending>();
+const LOGIN_ATTEMPT_TTL_MS = 10 * 60 * 1000; // matches the OAuth consent/code TTLs
+const MAX_PENDING_LOGINS = 32;
+
+/** Record a login attempt, pruning expired ones and bounding the map. */
+function rememberLogin(entry: Pending): void {
+  const now = Date.now();
+  for (const [state, p] of pendingLogins) if (p.expiresAt < now) pendingLogins.delete(state);
+  // Map insertion order is oldest-first, so drop from the front when full;
+  // /login is unauthenticated, so this cannot be allowed to grow without limit.
+  while (pendingLogins.size >= MAX_PENDING_LOGINS) {
+    const oldest = pendingLogins.keys().next().value;
+    if (oldest === undefined) break;
+    pendingLogins.delete(oldest);
+  }
+  pendingLogins.set(entry.state, entry);
+}
 
 function openBrowser(url: string): void {
   if (process.env.NODE_ENV === 'test' || process.env.VITEST) return; // never spawn browsers in tests
@@ -47,9 +75,9 @@ function openBrowser(url: string): void {
  * (e.g. client tool timeouts) does not strand the login. Stops once a session
  * exists or the attempt is replaced.
  */
-function startUrlReprompt(url: string): void {
+function startUrlReprompt(url: string, state: string): void {
   const timer = setInterval(() => {
-    if (getSession() || !pending) {
+    if (getSession() || !pendingLogins.has(state)) {
       clearInterval(timer);
       return;
     }
@@ -83,12 +111,25 @@ function resolveReturnUrl(next?: string): string {
       if (target.origin === baseUrl.origin) return target.toString();
     } catch { /* fall through to the base */ }
   }
-  return base;
+  // Normalized (origin-only URLs keep their trailing slash) so `state` matches
+  // the DevPanel SSO convention: base64 of "http://localhost/", not "…host".
+  try {
+    return new URL(base).toString();
+  } catch {
+    return base;
+  }
 }
 
 /**
- * Post-login redirect guard (DevPanel SSO convention): only redirect
- * to URLs on our own origin, and never back into the SSO/auth flow.
+ * Post-login redirect guard (DevPanel SSO convention): only redirect to URLs
+ * on our own origin, and never back into the *sign-in* leg of the flow.
+ *
+ * Applies to caller-supplied `next` only. `/authorize` stays blocked here:
+ * anyone can register an OAuth client and hand the operator a crafted /login
+ * link, and resuming into an arbitrary /authorize would show a consent page
+ * for a client they never launched. A genuine MCP authorization request
+ * resumes through the server-minted `continue` handle instead, which never
+ * passes through this function.
  */
 function safeReturnUrl(candidate: string): string {
   const base = config.transport === 'http' ? config.publicBaseUrl : `http://localhost:${config.loginCallbackPort}`;
@@ -97,7 +138,9 @@ function safeReturnUrl(candidate: string): string {
     const baseUrl = new URL(base);
     const target = new URL(candidate, base);
     if (target.origin !== baseUrl.origin) return base;
-    if (['/login', '/callback', '/authorize', '/consent', '/mcp'].includes(target.pathname)) return base;
+    // '/authorize/consent' is the real route (http-server.ts mounts the POST
+    // there); a bare '/consent' entry would match nothing.
+    if (['/login', '/callback', '/authorize', '/authorize/consent', '/mcp'].includes(target.pathname)) return base;
     return target.toString();
   } catch {
     return base;
@@ -113,13 +156,20 @@ function safeReturnUrl(candidate: string): string {
  */
 export async function handleLoginRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
+  const continuation = url.searchParams.get('continue') || undefined;
   const next = url.searchParams.get('next') || undefined;
 
   clearSession();
-  const returnUrl = resolveReturnUrl(next);
+  // A `continue` handle resolves to an /authorize URL this server itself built
+  // (one-time, server-side), so it is trusted verbatim. A caller-supplied
+  // `next` is not, and goes through the same-origin + blocklist guard.
+  const parked = continuation ? takeAuthorizeContinuation(continuation) : undefined;
+  const returnUrl = parked
+    ? new URL(parked, config.publicBaseUrl || 'http://localhost').toString()
+    : safeReturnUrl(resolveReturnUrl(next));
   const state = buildState(returnUrl);
   const { verifier, challenge } = generatePkce();
-  pending = { state, codeVerifier: verifier, next: returnUrl };
+  rememberLogin({ state, codeVerifier: verifier, next: returnUrl, expiresAt: Date.now() + LOGIN_ATTEMPT_TTL_MS });
   const loginUrl = buildAuthorizeUrl(state, challenge);
   setLoginUrl(loginUrl);
   console.error('[sso] Sign in to DevPanel required. Open this URL in your browser:');
@@ -131,7 +181,7 @@ export async function handleLoginRequest(req: IncomingMessage, res: ServerRespon
   }
 
   openBrowser(loginUrl);
-  startUrlReprompt(loginUrl);
+  startUrlReprompt(loginUrl, state);
   send(
     res,
     200,
@@ -161,20 +211,26 @@ export async function handleCallbackRequest(req: IncomingMessage, res: ServerRes
 
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
-  if (!code || !state || !pending || state !== pending.state) {
-    console.error('[sso] callback rejected: missing or mismatched state (CSRF guard)');
+  // Look the attempt up by its own state, so concurrent logins don't invalidate
+  // each other. An unknown state is the CSRF case; an expired one is a stale tab.
+  const attempt = state ? pendingLogins.get(state) : undefined;
+  if (!code || !state || !attempt || attempt.expiresAt < Date.now()) {
+    if (state) pendingLogins.delete(state);
+    console.error('[sso] callback rejected: missing, unknown or expired state (CSRF guard)');
     send(res, 400, 'text/plain', 'Invalid or missing state parameter');
     return;
   }
 
   try {
-    const tokens = await exchangeCodeForTokens(code, pending.codeVerifier);
-    pending = null;
+    const tokens = await exchangeCodeForTokens(code, attempt.codeVerifier);
+    pendingLogins.delete(state);
     const session = storeTokensFromCognito(tokens);
     console.error(`[sso] login successful for user ${session.sub}${session.email ? ` (${session.email})` : ''}`);
 
     if (config.transport === 'http') {
-      const redirect = safeReturnUrl(decodeState(state));
+      // Resume where this attempt was parked. The destination was validated (or
+      // server-minted) at /login, so it is not re-derived from the callback URL.
+      const redirect = attempt.next ?? config.publicBaseUrl ?? '/';
       send(res, 302, 'text/plain', 'Login successful — redirecting…', { location: redirect });
       return;
     }
@@ -244,12 +300,12 @@ export async function beginLogin(): Promise<string> {
   const returnUrl = resolveReturnUrl(undefined);
   const state = buildState(returnUrl);
   const { verifier, challenge } = generatePkce();
-  pending = { state, codeVerifier: verifier, next: returnUrl };
+  rememberLogin({ state, codeVerifier: verifier, next: returnUrl, expiresAt: Date.now() + LOGIN_ATTEMPT_TTL_MS });
   const url = buildAuthorizeUrl(state, challenge);
   setLoginUrl(url);
   console.error('[sso] Sign in to DevPanel required. Open this URL in your browser:');
   console.error('[sso]   ' + url);
   openBrowser(url);
-  startUrlReprompt(url);
+  startUrlReprompt(url, state);
   return url;
 }

@@ -1,4 +1,4 @@
-import { decodeIdToken, refreshTokens, type CognitoTokens } from './cognito.js';
+import { decodeIdentityClaims, refreshTokens, type CognitoTokens } from './cognito.js';
 
 /**
  * In-memory server-side session store for the Cognito credential.
@@ -7,12 +7,16 @@ import { decodeIdToken, refreshTokens, type CognitoTokens } from './cognito.js';
  * process's memory. Nothing is ever written to disk and nothing is ever handed
  * to the MCP client. A process restart means a fresh login: each MCP client
  * that spawns its own server signs in once.
- * DevPanel calls use `accessToken`; identity/ownership uses `sub` from the id_token.
+ * DevPanel calls use `accessToken`; identity/ownership uses `sub`, taken from
+ * the id_token when one was issued and from the access_token otherwise. Which
+ * happens depends on COGNITO_SCOPES: the built-in default requests `openid`
+ * (id_token issued), while an `email`-only scope set does not.
  */
 
 interface SessionData {
   accessToken: string;
-  idToken: string;
+  /** Absent unless the `openid` scope was requested. */
+  idToken?: string;
   refreshToken?: string;
   sub: string;
   email?: string;
@@ -41,12 +45,16 @@ export function clearSession(): void {
 
 /** Build a SessionData from a Cognito token response (expires_at = now + expires_in - buffer). */
 export function storeTokensFromCognito(tokens: CognitoTokens): SessionData {
-  const claims = decodeIdToken(tokens.id_token);
+  const claims = decodeIdentityClaims(tokens);
   const expiresInSeconds = typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in) ? tokens.expires_in : 3600;
   const data: SessionData = {
     accessToken: tokens.access_token,
     idToken: tokens.id_token,
-    refreshToken: tokens.refresh_token,
+    // Cognito omits refresh_token on the refresh grant (it only issues one at
+    // initial login, unless rotation is enabled), so taking the response value
+    // unconditionally would discard the session's ability to renew after its
+    // first renewal — the session would then die one access-token lifetime later.
+    refreshToken: tokens.refresh_token ?? memory?.refreshToken,
     sub: claims.sub,
     email: claims.email,
     expiresAt: Date.now() + Math.max(0, expiresInSeconds - 60) * 1000,
@@ -60,9 +68,18 @@ export function getOwnerId(): string {
   return memory?.sub ?? 'local';
 }
 
-/** The access token to forward to DevPanel, if a session exists. */
+/**
+ * The token to forward to DevPanel, if a session exists.
+ * DevPanel's AuthGuard looks the user up by the `email` claim, which only the
+ * id_token carries — an access_token has none regardless of the scopes asked
+ * for (`email` scope grants userInfo access, it does not embed the claim), so
+ * forwarding one makes every DevPanel call fail on `decoded.email`. Falls back
+ * to the access token for the no-`openid` scope set, where no id_token is
+ * issued at all; that session cannot authenticate against DevPanel either way,
+ * and the fallback keeps the failure at DevPanel rather than sending none.
+ */
 export function getAccessToken(): string | undefined {
-  return memory?.accessToken;
+  return memory?.idToken ?? memory?.accessToken;
 }
 
 export function getLoginUrl(): string {

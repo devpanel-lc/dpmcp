@@ -4,7 +4,8 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { config } from '../src/config.js';
 import {
-  buildAuthorizeUrl, buildState, decodeIdToken, decodeState, exchangeCodeForTokens, generatePkce, refreshTokens,
+  buildAuthorizeUrl, buildState, decodeIdentityClaims, decodeIdToken, decodeState, exchangeCodeForTokens,
+  generatePkce, refreshTokens,
 } from '../src/auth/cognito.js';
 import {
   clearSession, ensureFresh, getAccessToken, getLoginUrl, getOwnerId, getSession, refreshNow,
@@ -23,10 +24,16 @@ function makeIdToken(claims: Record<string, unknown>): string {
   return `${header}.${payload}.signature`;
 }
 
+// The id_token is what gets forwarded to DevPanel (it carries the `email`
+// claim the AuthGuard reads), so the refresh stubs below hand back a distinct
+// FRESH_ID_TOKEN to prove the forwarded token actually rotates on renewal.
+const ID_TOKEN_001 = makeIdToken({ sub: TEST_SUB, email: TEST_EMAIL, exp: Math.floor(Date.now() / 1000) + 3600 });
+const FRESH_ID_TOKEN = makeIdToken({ sub: TEST_SUB, email: TEST_EMAIL, jti: 'fresh', exp: Math.floor(Date.now() / 1000) + 3600 });
+
 function makeTokens(overrides: Record<string, unknown> = {}) {
   return {
     access_token: 'access-token-001',
-    id_token: makeIdToken({ sub: TEST_SUB, email: TEST_EMAIL, exp: Math.floor(Date.now() / 1000) + 3600 }),
+    id_token: ID_TOKEN_001,
     refresh_token: 'refresh-token-001',
     expires_in: 3600,
     token_type: 'Bearer',
@@ -37,7 +44,7 @@ function makeTokens(overrides: Record<string, unknown> = {}) {
 function makeSession(overrides: Partial<Parameters<typeof saveSession>[0]> = {}) {
   return {
     accessToken: 'access-token-001',
-    idToken: makeIdToken({ sub: TEST_SUB, email: TEST_EMAIL }),
+    idToken: ID_TOKEN_001,
     refreshToken: 'refresh-token-001',
     sub: TEST_SUB,
     email: TEST_EMAIL,
@@ -119,6 +126,27 @@ describe('cognito authorize URL and PKCE', () => {
     expect(() => decodeIdToken('not-a-jwt')).toThrow('Malformed id_token');
     expect(() => decodeIdToken(`${'a'.repeat(10)}.${'b'.repeat(10)}`)).toThrow('Malformed id_token');
   });
+
+  // The DevPanel SSO scope set is `email` alone — no `openid`, so Cognito
+  // issues no id_token and identity has to come from the access_token.
+  it('falls back to the access_token when no id_token was issued', () => {
+    const claims = decodeIdentityClaims(makeTokens({
+      id_token: undefined,
+      access_token: makeIdToken({ sub: TEST_SUB, token_use: 'access', scope: 'email', exp: 1234567890 }),
+    }));
+    expect(claims.sub).toBe(TEST_SUB);
+    expect(claims.email).toBeUndefined(); // access tokens never carry email
+    expect(claims.exp).toBe(1234567890);
+  });
+
+  it('prefers the id_token when one is present', () => {
+    expect(decodeIdentityClaims(makeTokens()).email).toBe(TEST_EMAIL);
+  });
+
+  it('rejects a token response whose access_token is not a JWT when no id_token exists', () => {
+    expect(() => decodeIdentityClaims(makeTokens({ id_token: undefined, access_token: 'opaque' })))
+      .toThrow('Malformed access_token');
+  });
 });
 
 describe('token endpoint auth', () => {
@@ -177,15 +205,52 @@ describe('session store', () => {
     expect(session.expiresAt).toBeLessThanOrEqual(Date.now() + 3600 * 1000);
 
     expect(getOwnerId()).toBe(TEST_SUB);
-    expect(getAccessToken()).toBe('access-token-001');
+    // DevPanel gets the id_token, not the access_token — only it carries `email`.
+    expect(getAccessToken()).toBe(ID_TOKEN_001);
     expect(getSession()?.email).toBe(TEST_EMAIL);
+  });
+
+  it('stores a session from a scope=email token response (no id_token)', () => {
+    const accessToken = makeIdToken({ sub: TEST_SUB, token_use: 'access', scope: 'email' });
+    const session = storeTokensFromCognito(makeTokens({
+      id_token: undefined,
+      refresh_token: undefined, // no offline_access either
+      access_token: accessToken,
+    }));
+    expect(session.sub).toBe(TEST_SUB);
+    expect(session.idToken).toBeUndefined();
+    expect(session.email).toBeUndefined();
+    expect(session.accessToken).toBe(accessToken);
+    expect(getOwnerId()).toBe(TEST_SUB);
+    expect(getAccessToken()).toBe(accessToken);
+  });
+
+  // Cognito's refresh grant returns no refresh_token (it only issues one at
+  // initial login unless rotation is on). Taking the response value blindly
+  // would leave the renewed session unable to renew again, killing it one
+  // access-token lifetime later.
+  it('keeps the stored refresh token when the refresh response omits one', async () => {
+    saveSession(makeSession({ refreshToken: 'original-rt', expiresAt: Date.now() - 1000 }));
+    stubFetch(() => ({
+      ok: true,
+      text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', refresh_token: undefined })),
+    }));
+
+    expect(await refreshNow()).toBe(true);
+    expect(getSession()?.accessToken).toBe('fresh-access');
+    expect(getSession()?.refreshToken).toBe('original-rt');
+
+    // ...and a second renewal still works, rather than clearing the session.
+    saveSession({ ...getSession()!, expiresAt: Date.now() - 1000 });
+    expect(await refreshNow()).toBe(true);
+    expect(getSession()?.refreshToken).toBe('original-rt');
   });
 
   it('refreshNow renews an expired access token', async () => {
     saveSession(makeSession({ accessToken: 'old-access', expiresAt: Date.now() - 1000 }));
     const fetchMock = stubFetch((call) => {
       if (call.url.includes('/oauth2/token')) {
-        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', refresh_token: 'refresh-rt' })) };
+        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', id_token: FRESH_ID_TOKEN, refresh_token: 'refresh-rt' })) };
       }
       return { ok: false, status: 500, text: async () => 'unexpected' };
     });
@@ -193,19 +258,21 @@ describe('session store', () => {
     const body = new URLSearchParams((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(body.get('grant_type')).toBe('refresh_token');
     expect(body.get('refresh_token')).toBe('refresh-token-001');
-    expect(getAccessToken()).toBe('fresh-access');
+    expect(getSession()?.accessToken).toBe('fresh-access');
+    expect(getAccessToken()).toBe(FRESH_ID_TOKEN);
   });
 
   it('refreshNow with force=true refreshes an unexpired token', async () => {
     saveSession(makeSession({ accessToken: 'old-access', expiresAt: Date.now() + 60_000 }));
     stubFetch((call) => {
       if (call.url.includes('/oauth2/token')) {
-        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', refresh_token: 'refresh-rt' })) };
+        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', id_token: FRESH_ID_TOKEN, refresh_token: 'refresh-rt' })) };
       }
       return { ok: false, status: 500, text: async () => 'unexpected' };
     });
     expect(await refreshNow(true)).toBe(true);
-    expect(getAccessToken()).toBe('fresh-access');
+    expect(getSession()?.accessToken).toBe('fresh-access');
+    expect(getAccessToken()).toBe(FRESH_ID_TOKEN);
   });
 
   it('refreshNow clears the session when refresh fails', async () => {
@@ -346,7 +413,7 @@ describe('DevPanel upstream auth', () => {
     const authHeaders: string[] = [];
     stubFetch((call) => {
       if (call.url.includes('/oauth2/token')) {
-        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', refresh_token: 'refresh-rt' })) };
+        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', id_token: FRESH_ID_TOKEN, refresh_token: 'refresh-rt' })) };
       }
       devPanelCalls += 1;
       authHeaders.push((call.init?.headers as Record<string, string>)?.authorization ?? '');
@@ -356,15 +423,15 @@ describe('DevPanel upstream auth', () => {
     const client = new RealDevPanelClient('expired-access', true);
     const result = await client.listWorkspaces();
     expect(result).toEqual([]);
-    expect(authHeaders).toEqual(['Bearer expired-access', 'Bearer fresh-access']);
-    expect(getAccessToken()).toBe('fresh-access');
+    expect(authHeaders).toEqual(['Bearer expired-access', `Bearer ${FRESH_ID_TOKEN}`]);
+    expect(getAccessToken()).toBe(FRESH_ID_TOKEN);
   });
 
   it('throws and clears the session when the retried request is also 401', async () => {
     saveSession(makeSession({ accessToken: 'expired-access', expiresAt: Date.now() - 1000 }));
     stubFetch((call) => {
       if (call.url.includes('/oauth2/token')) {
-        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', refresh_token: 'refresh-rt' })) };
+        return { ok: true, text: async () => JSON.stringify(makeTokens({ access_token: 'fresh-access', id_token: FRESH_ID_TOKEN, refresh_token: 'refresh-rt' })) };
       }
       return { ok: false, status: 401, text: async () => 'Unauthorized' };
     });

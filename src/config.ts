@@ -86,6 +86,13 @@ export const config = {
   loginTimeoutMs: Number(env('DP_LOGIN_TIMEOUT_MS', '180000')),
   /** Cap on how long a client-native elicitation dialog may take before we fall back to the external review URL. */
   elicitTimeoutMs: Number(env('DP_ELICIT_TIMEOUT_MS', '60000')),
+  /**
+   * Print every /mcp request's bearer tokens to the server log, IN FULL.
+   * Local debugging aid only: the values logged are live credentials, so
+   * anything with access to the terminal scrollback or a captured log file can
+   * replay them. Never enable on a deployed/shared server. Default off.
+   */
+  debugAuth: ['1', 'true'].includes(env('DP_DEBUG_AUTH', '').toLowerCase()),
   cognito: {
     clientId: env('COGNITO_CLIENT_ID', ''),
     clientSecret: process.env.COGNITO_CLIENT_SECRET ?? '',

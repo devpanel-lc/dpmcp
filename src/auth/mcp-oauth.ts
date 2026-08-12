@@ -64,6 +64,15 @@ const codes = new Map<string, StoredCode>();
 const grants = new Map<string, StoredGrant>();
 const refreshToAccess = new Map<string, string>();
 const pendingConsent = new Map<string, PendingConsent>();
+/**
+ * Authorization requests parked while the human signs in to Cognito, keyed by
+ * an opaque one-time token. The /authorize URL is held HERE rather than passed
+ * to /login as a query param: a URL the caller can supply is a URL an attacker
+ * can supply, and /callback redirecting to an arbitrary /authorize would put a
+ * consent page for an attacker-registered client in front of a freshly
+ * signed-in operator. Only this server can mint an entry.
+ */
+const pendingContinuations = new Map<string, { url: string; expiresAt: number }>();
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -80,6 +89,20 @@ function sweepExpired(): void {
   for (const [token, grant] of grants) if (grant.expiresAt < now) grants.delete(token);
   for (const [refreshToken, accessId] of refreshToAccess) if (!grants.has(accessId)) refreshToAccess.delete(refreshToken);
   for (const [token, pending] of pendingConsent) if (pending.expiresAt < now) pendingConsent.delete(token);
+  for (const [token, cont] of pendingContinuations) if (cont.expiresAt < now) pendingContinuations.delete(token);
+}
+
+/**
+ * Resolve and consume a login continuation minted by authorize().
+ * One-time: the entry is removed on read, so a leaked token cannot be replayed.
+ * Returns undefined for unknown or expired tokens, and the caller then falls
+ * back to the plain post-login destination.
+ */
+export function takeAuthorizeContinuation(token: string): string | undefined {
+  const entry = pendingContinuations.get(token);
+  if (!entry) return undefined;
+  pendingContinuations.delete(token);
+  return entry.expiresAt < Date.now() ? undefined : entry.url;
 }
 
 /** Call once when the http transport starts. Matches session.ts's startAutoRefresh() pattern. */
@@ -133,8 +156,14 @@ export class McpOAuthProvider implements OAuthServerProvider {
       return;
     }
     if (!getSession()) {
-      const next = buildAuthorizeNextUrl(client, params);
-      res.redirect(302, `/login?next=${encodeURIComponent(next)}`);
+      // Park the request server-side and hand /login only an opaque handle, so
+      // the resumed destination is provably one this server built.
+      const continuation = newToken();
+      pendingContinuations.set(continuation, {
+        url: buildAuthorizeNextUrl(client, params),
+        expiresAt: Date.now() + CONSENT_TTL_MS,
+      });
+      res.redirect(302, `/login?continue=${encodeURIComponent(continuation)}`);
       return;
     }
 
@@ -274,6 +303,23 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (grant.expiresAt < Date.now()) {
       grants.delete(token);
       throw new InvalidTokenError('Access token has expired');
+    }
+    // The MCP grant and the DevPanel session are independent lifetimes: this
+    // grant stays valid (and its refresh token keeps minting new ones) long
+    // after the Cognito session has expired, so a client would otherwise go on
+    // believing it is authenticated while every tool call fails.
+    //
+    // Rejecting here produces a 401 + WWW-Authenticate challenge, which is the
+    // only signal that makes an MCP client re-run the OAuth flow — /authorize
+    // then finds no session and bounces through /login to Cognito. Without it
+    // the failure surfaces as a 200 tool error the client cannot act on.
+    //
+    // ASCII only: InvalidTokenError's description is interpolated into the
+    // WWW-Authenticate header, and Node rejects non-latin1 header content with
+    // ERR_INVALID_CHAR — which express would turn into a 500, defeating the
+    // whole point of signalling 401 here.
+    if (!getSession()) {
+      throw new InvalidTokenError('DevPanel session expired - re-authentication required');
     }
     return {
       token,
