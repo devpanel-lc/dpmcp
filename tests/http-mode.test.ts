@@ -102,12 +102,13 @@ async function authorizeAndConsent(base: string, clientId: string): Promise<{ co
       { redirect: 'manual' },
     );
 
-  // No DevPanel session yet → /login first.
+  // No DevPanel session yet → /login first, carrying an opaque server-minted
+  // continuation handle (never the /authorize URL itself).
   const loginRedirect = await authorize(false);
   expect(loginRedirect.status).toBe(302);
   const location = loginRedirect.headers.get('location') ?? '';
-  expect(location).toMatch(/^\/login\?next=/);
-  expect(decodeURIComponent(location)).toContain('/authorize?');
+  expect(location).toMatch(/^\/login\?continue=/);
+  expect(decodeURIComponent(location)).not.toContain('/authorize?');
 
   // Sign in server-side, then authorize again → consent page.
   saveSession(makeSession());
@@ -201,7 +202,185 @@ function stubDevPanelFetch(handler: (call: DevPanelCall) => { ok: boolean; statu
   return fn;
 }
 
+/** Stubs the Cognito token endpoint (used by the /callback code exchange) while
+ *  letting the test's own calls to the local http server through untouched. */
+function stubCognitoTokenFetch(tokens: Record<string, unknown>) {
+  const realFetch = globalThis.fetch;
+  const fn = vi.fn(async (url: unknown, init?: RequestInit) => {
+    if (String(url).startsWith(config.cognito.domain)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify(tokens) } as Response;
+    }
+    return realFetch(url as string, init);
+  });
+  vi.stubGlobal('fetch', fn);
+  return fn;
+}
+
 describe('http transport server', () => {
+  // Regression: /callback used to refuse to redirect back to /authorize, so an
+  // MCP client (opencode et al.) sat waiting for a code that never arrived even
+  // though the human had signed in to Cognito successfully.
+  it('returns the browser to /authorize after Cognito sign-in so the MCP client gets its code', async () => {
+    ctx = await startApp();
+    clearSession();
+    const clientId = await registerClient(ctx.base);
+    const { challenge } = generatePkce();
+
+    // 1. MCP client hits /authorize with no server session → bounced to /login.
+    const authorizeRes = await fetch(
+      `${ctx.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&state=s1`,
+      { redirect: 'manual' },
+    );
+    expect(authorizeRes.status).toBe(302);
+    const loginPath = authorizeRes.headers.get('location') ?? '';
+    expect(loginPath).toMatch(/^\/login\?continue=/);
+
+    // 2. /login resolves the parked request and sends us to Cognito.
+    const loginRes = await fetch(`${ctx.base}${loginPath}`, { redirect: 'manual' });
+    expect(loginRes.status).toBe(302);
+    const cognitoUrl = new URL(loginRes.headers.get('location') ?? '');
+    const state = cognitoUrl.searchParams.get('state') ?? '';
+    expect(Buffer.from(state, 'base64').toString('utf8')).toContain('/authorize?');
+
+    // 3. Cognito redirects back to /callback; the code exchange succeeds.
+    const fetchMock = stubCognitoTokenFetch({
+      access_token: makeIdToken({ sub: TEST_SUB, token_use: 'access', scope: 'email' }),
+      expires_in: 3600,
+      token_type: 'Bearer',
+    });
+    try {
+      const callbackRes = await fetch(
+        `${ctx.base}/callback?code=cognito-code&state=${encodeURIComponent(state)}`,
+        { redirect: 'manual' },
+      );
+      expect(callbackRes.status).toBe(302);
+      const back = new URL(callbackRes.headers.get('location') ?? '');
+      // The whole point: back to /authorize with the original request intact,
+      // not dumped on the site root.
+      expect(back.pathname).toBe('/authorize');
+      expect(back.searchParams.get('client_id')).toBe(clientId);
+      expect(back.searchParams.get('state')).toBe('s1');
+      expect(back.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:9999/callback');
+    } finally {
+      // Only cleanup belongs here — an expect() in finally would replace and
+      // mask a failure thrown from the try block.
+      vi.unstubAllGlobals();
+    }
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  // A caller-supplied `next` must not be able to resume into /authorize: anyone
+  // can register an OAuth client, and a crafted /login link would otherwise put
+  // a consent page for an attacker's client in front of a signed-in operator.
+  it('refuses to resume into /authorize from a caller-supplied next', async () => {
+    ctx = await startApp();
+    clearSession();
+    const attackerClient = await registerClient(ctx.base);
+
+    const loginRes = await fetch(
+      `${ctx.base}/login?next=${encodeURIComponent(`/authorize?response_type=code&client_id=${attackerClient}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}&code_challenge=x&code_challenge_method=S256`)}`,
+      { redirect: 'manual' },
+    );
+    expect(loginRes.status).toBe(302);
+    const state = new URL(loginRes.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    // The parked destination fell back to the base URL, not the attacker's /authorize.
+    expect(Buffer.from(state, 'base64').toString('utf8')).not.toContain('/authorize');
+
+    const fetchMock = stubCognitoTokenFetch({
+      access_token: makeIdToken({ sub: TEST_SUB, token_use: 'access', scope: 'email' }),
+      expires_in: 3600,
+      token_type: 'Bearer',
+    });
+    try {
+      const callbackRes = await fetch(
+        `${ctx.base}/callback?code=cognito-code&state=${encodeURIComponent(state)}`,
+        { redirect: 'manual' },
+      );
+      expect(callbackRes.status).toBe(302);
+      expect(new URL(callbackRes.headers.get('location') ?? '').pathname).not.toBe('/authorize');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  // Two MCP clients signing in at once each get their own login attempt; a
+  // single global would let the second overwrite the first and hang it.
+  it('keeps concurrent login attempts independent', async () => {
+    ctx = await startApp();
+    clearSession();
+    const clientA = await registerClient(ctx.base);
+    const clientB = await registerClient(ctx.base);
+
+    const start = async (clientId: string, state: string) => {
+      const { challenge } = generatePkce();
+      const res = await fetch(
+        `${ctx!.base}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent('http://127.0.0.1:9999/callback')}` +
+          `&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`,
+        { redirect: 'manual' },
+      );
+      const login = await fetch(`${ctx!.base}${res.headers.get('location') ?? ''}`, { redirect: 'manual' });
+      return new URL(login.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    };
+
+    // A starts, then B starts — B must not invalidate A.
+    const stateA = await start(clientA, 'sA');
+    const stateB = await start(clientB, 'sB');
+    expect(stateA).not.toBe(stateB);
+
+    const fetchMock = stubCognitoTokenFetch({
+      access_token: makeIdToken({ sub: TEST_SUB, token_use: 'access', scope: 'email' }),
+      expires_in: 3600,
+      token_type: 'Bearer',
+    });
+    try {
+      // A's callback still resolves, to A's own authorize request.
+      const callbackA = await fetch(
+        `${ctx.base}/callback?code=code-a&state=${encodeURIComponent(stateA)}`,
+        { redirect: 'manual' },
+      );
+      expect(callbackA.status).toBe(302);
+      const backA = new URL(callbackA.headers.get('location') ?? '');
+      expect(backA.pathname).toBe('/authorize');
+      expect(backA.searchParams.get('client_id')).toBe(clientA);
+      expect(backA.searchParams.get('state')).toBe('sA');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  // The MCP grant outlives the Cognito session, so without this the client
+  // keeps believing it is authenticated while every tool call fails with a 200
+  // tool error it cannot act on. A 401 + WWW-Authenticate is the only signal
+  // that makes an MCP client re-run the OAuth flow.
+  it('challenges with 401 once the DevPanel session is gone, so the client can re-authenticate', async () => {
+    ctx = await startApp();
+    const clientId = await registerClient(ctx.base);
+    const { code, verifier } = await authorizeAndConsent(ctx.base, clientId);
+    const { access } = await exchangeCode(ctx.base, clientId, code, verifier);
+
+    const call = () => fetch(`${ctx!.base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${access}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'c', version: '0' } } }),
+    });
+
+    // Session alive → the grant is accepted.
+    expect((await call()).status).toBe(200);
+
+    // Session expired/cleared → the same still-valid grant now draws a challenge.
+    clearSession();
+    const challenged = await call();
+    expect(challenged.status).toBe(401);
+    expect(challenged.headers.get('www-authenticate')).toContain('resource_metadata');
+  });
+
   it('serves /healthz regardless of Host header, and rejects unknown Host headers on other routes', async () => {
     ctx = await startApp();
     const res = await fetch(`${ctx.base}/healthz`);

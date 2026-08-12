@@ -13,6 +13,7 @@ import { buildServer } from './server.js';
 import type { PlanStore } from './stores/plan-store.js';
 import { McpOAuthProvider, startOAuthMapSweep } from './auth/mcp-oauth.js';
 import { handleCallbackRequest, handleLoginRequest } from './auth/login-server.js';
+import { logMcpAuthDebug, logMcpForwardedTokenDebug, logMcpRpcDebug, logSessionDebug, warnIfAuthDebugEnabled } from './auth/debug-log.js';
 import { createReviewHandler } from './approval/review-server.js';
 
 /**
@@ -197,6 +198,7 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   const provider = new McpOAuthProvider(config.mcpBearerToken || undefined);
   logStaticBearerSource();
   warnIfCleartext();
+  warnIfAuthDebugEnabled();
   startOAuthMapSweep();
   const app = express();
   app.disable('x-powered-by');
@@ -210,6 +212,10 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   });
 
   app.use(hostGuard());
+
+  // Session snapshot on every request (DP_DEBUG_AUTH=1). Ahead of the OAuth
+  // router so the /login -> /callback -> /authorize round trip is visible too.
+  app.use(logSessionDebug());
 
   // MCP OAuth authorization server (metadata, dynamic registration, authorize, token, revoke).
   app.use(
@@ -236,6 +242,12 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
     void handleCallbackRequest(req, res);
   });
 
+  // Inbound-bearer logging (DP_DEBUG_AUTH=1) sits ahead of the auth layer so
+  // requests it rejects still get logged — a 401 with no trace is the case
+  // worth seeing. The forwarded DevPanel credential is logged separately,
+  // behind the auth gate, so anonymous probes can't extract it.
+  app.use('/mcp', logMcpAuthDebug());
+
   // MCP endpoint — protected by MCP OAuth bearer tokens.
   app.use(
     '/mcp',
@@ -247,8 +259,11 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   // One handler instance shared across all three verbs -- see handleMcpRequest's
   // doc comment for why (a session created via POST must be reachable from the
   // GET/DELETE requests for that same session id).
+  // Past requireBearerAuth: safe to log the credential this server forwards.
+  app.use('/mcp', logMcpForwardedTokenDebug());
+
   const mcpHandler = handleMcpRequest(dpFactory, store);
-  app.post('/mcp', requireJsonContentType(), express.json({ limit: '4mb' }), mcpHandler);
+  app.post('/mcp', requireJsonContentType(), express.json({ limit: '4mb' }), logMcpRpcDebug(), mcpHandler);
   app.get('/mcp', mcpHandler);
   app.delete('/mcp', mcpHandler);
 

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { config } from '../config.js';
+import { logSsoTokenResponse } from './token-format.js';
 
 /**
  * Cognito hosted-UI client (OAuth 2.0 authorization code grant + PKCE).
@@ -15,7 +16,9 @@ import { config } from '../config.js';
 
 export interface CognitoTokens {
   access_token: string;
-  id_token: string;
+  /** Only issued when COGNITO_SCOPES includes `openid` — the built-in default
+   *  does, an `email`-only scope set does not. Optional either way. */
+  id_token?: string;
   refresh_token?: string;
   expires_in: number;
   token_type: string;
@@ -90,6 +93,7 @@ async function postTokenForm(body: URLSearchParams): Promise<CognitoTokens> {
     const detail = description || code || text;
     throw new Error(`Cognito token endpoint ${response.status}: ${detail}`);
   }
+  logSsoTokenResponse(params.get('grant_type') ?? 'unknown', json);
   return json as unknown as CognitoTokens;
 }
 
@@ -115,25 +119,43 @@ export async function refreshTokens(refreshToken: string): Promise<CognitoTokens
   );
 }
 
-/** Decode identity claims from the id_token JWT payload (no signature verification — DevPanel validates). */
-export function decodeIdToken(idToken: string): IdTokenClaims {
-  const parts = idToken.split('.');
-  if (parts.length !== 3) throw new Error('Malformed id_token');
+/** Decode a Cognito JWT payload (no signature verification — DevPanel validates). */
+function decodeJwtClaims(token: string | undefined, label: string): IdTokenClaims {
+  const parts = (token ?? '').split('.');
+  if (parts.length !== 3) throw new Error(`Malformed ${label}`);
   const payload = Buffer.from(parts[1], 'base64url').toString('utf8');
   let claims: Record<string, unknown>;
   try {
     claims = JSON.parse(payload) as Record<string, unknown>;
   } catch {
-    throw new Error('Malformed id_token payload');
+    throw new Error(`Malformed ${label} payload`);
   }
   const sub = typeof claims.sub === 'string' ? claims.sub : '';
-  if (!sub) throw new Error('id_token missing sub claim');
+  if (!sub) throw new Error(`${label} missing sub claim`);
   return {
     sub,
     email: typeof claims.email === 'string' ? claims.email : undefined,
     email_verified: typeof claims.email_verified === 'boolean' ? claims.email_verified : undefined,
     exp: typeof claims.exp === 'number' ? claims.exp : undefined,
   };
+}
+
+/** Decode identity claims from the id_token JWT payload. */
+export function decodeIdToken(idToken: string): IdTokenClaims {
+  return decodeJwtClaims(idToken, 'id_token');
+}
+
+/**
+ * Identity claims for a token response.
+ * Cognito only issues an id_token when `openid` is among the requested scopes
+ * (see COGNITO_SCOPES — the built-in default includes it, an `email`-only
+ * scope set does not). Without one, fall back to the access_token JWT: it
+ * always carries `sub`, but never `email`, so `email` is absent in that case.
+ */
+export function decodeIdentityClaims(tokens: CognitoTokens): IdTokenClaims {
+  return tokens.id_token
+    ? decodeJwtClaims(tokens.id_token, 'id_token')
+    : decodeJwtClaims(tokens.access_token, 'access_token');
 }
 
 /** PKCE pair (RFC 7636, S256). */
