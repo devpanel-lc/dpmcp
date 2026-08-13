@@ -33,7 +33,12 @@ export type PlanAction =
   | 'ENABLE_PMA'
   | 'DISABLE_PMA';
 
-export type ApprovalMethod = 'MCP_ELICITATION' | 'URL_ELICITATION' | 'EXTERNAL_URL';
+/**
+ * Approval is obtained in the agent conversation: the plan is rendered as text,
+ * the human answers APPROVE/REJECT, and the model relays that answer back with
+ * the plan hash. There is no client dialog and no review page.
+ */
+export type ApprovalMethod = 'IN_CONVERSATION';
 
 export interface WorkspaceRef {
   id: string;

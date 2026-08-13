@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { config } from '../src/config.js';
 import { startHttpServer } from '../src/http-server.js';
 import { MockDevPanelClient } from '../src/clients/mock-devpanel.js';
@@ -12,7 +9,6 @@ import type { DevPanelClientFactory } from '../src/clients/devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
 import { clearSession, saveSession } from '../src/auth/session.js';
 import { generatePkce } from '../src/auth/cognito.js';
-import type { ChangePlan } from '../src/domain/types.js';
 
 const TEST_SUB = 'c979c90e-9081-7091-a748-b2e15604c2ef';
 const TEST_EMAIL = 'lc@devpanel.com';
@@ -55,7 +51,6 @@ async function startApp(dpFactory: DevPanelClientFactory = () => new MockDevPane
   const port = await reservePort();
   config.httpPort = port;
   config.publicBaseUrl = `http://127.0.0.1:${port}`;
-  config.approvalPublicBaseUrl = config.publicBaseUrl;
   const server = await startHttpServer(dpFactory, store);
   return {
     base: config.publicBaseUrl,
@@ -158,7 +153,6 @@ async function exchangeCode(base: string, clientId: string, code: string, verifi
 beforeEach(() => {
   config.mode = 'mock';
   config.transport = 'http';
-  config.approvalMode = 'auto';
   // OAuth-dance tests assert the no-session → /login redirect, which only
   // applies in sso mode. Off-mode behavior is covered by dedicated tests.
   config.authMode = 'sso';
@@ -175,7 +169,6 @@ afterEach(async () => {
   }
   config.transport = 'stdio';
   config.publicBaseUrl = '';
-  config.approvalPublicBaseUrl = 'http://127.0.0.1:8787';
   config.httpPort = 3000;
   config.mcpBearerToken = '';
   config.authMode = 'off';
@@ -750,7 +743,7 @@ describe('http transport server', () => {
     expect(noHeader.status).toBe(401);
   });
 
-  it('falls back to the external review URL when approval is requested over http', async () => {
+  it('approves in-conversation over http: plan text first, then the relayed decision', async () => {
     const c = await startApp();
     ctx = c;
     const clientId = await registerClient(c.base);
@@ -801,96 +794,53 @@ describe('http transport server', () => {
     ) as { plan: { id: string } };
     expect(createdText.plan.id).toBeTruthy();
 
-    // This test's initialize() declares no capabilities, so the SDK's elicitInput()
-    // rejects (client doesn't support form/url elicitation) → external review URL.
-    // A client that DOES declare elicitation support is covered by the next test.
-    const approved = await mcp(init.sessionId, {
+    // Call 1: planId only -> the plan as text plus the static question. This
+    // client declares no capabilities at all, which is the whole point: no
+    // dialog is needed and no URL is ever handed over.
+    const asked = await mcp(init.sessionId, {
       jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name: 'devpanel_approve_and_execute_plan', arguments: { planId: createdText.plan.id } },
     });
+    const askText = JSON.parse(
+      ((asked.body as { result: { content: Array<{ text: string }> } }).result.content[0].text),
+    ) as { state: string; plan_text: string; plan: { hash: string }; approval_url?: string };
+    expect(askText.state).toBe('APPROVAL_REQUIRED');
+    expect(askText.plan_text).toContain('DevPanel Change Plan');
+    expect(askText.plan_text).toContain('Reply APPROVE to execute it, or REJECT to cancel.');
+    expect(askText.approval_url).toBeUndefined();
+    // Nothing executed yet.
+    expect((await ctx!.store.get(createdText.plan.id))?.approval).toBeUndefined();
+
+    // Call 2: the human's answer, relayed with the hash they were shown.
+    const approved = await mcp(init.sessionId, {
+      jsonrpc: '2.0', id: 4, method: 'tools/call',
+      params: {
+        name: 'devpanel_approve_and_execute_plan',
+        arguments: { planId: createdText.plan.id, decision: 'APPROVE', planHash: askText.plan.hash },
+      },
+    });
     const approveText = JSON.parse(
       ((approved.body as { result: { content: Array<{ text: string }> } }).result.content[0].text),
-    ) as { state: string; approval_url: string };
-    expect(approveText.state).toBe('APPROVAL_REQUIRED');
-    expect(approveText.approval_url).toBe(`${ctx.base}/review/${createdText.plan.id}`);
-  });
-
-  it('uses native form elicitation over http instead of the external URL, when the client declares support', async () => {
-    const c = await startApp();
-    ctx = c;
-    const clientId = await registerClient(c.base);
-    const { code, verifier } = await authorizeAndConsent(c.base, clientId);
-    const tokens = await exchangeCode(c.base, clientId, code, verifier);
-
-    const client = new Client(
-      { name: 'test-elicitation-client', version: '1.0.0' },
-      { capabilities: { elicitation: { form: {} } } },
-    );
-    client.setRequestHandler(ElicitRequestSchema, async () => ({
-      action: 'accept',
-      content: { confirm: true },
-    }));
-    const transport = new StreamableHTTPClientTransport(new URL(`${c.base}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${tokens.access}` } },
-    });
-    await client.connect(transport);
-
-    const created = await client.callTool({
-      name: 'devpanel_plan_create_application',
-      arguments: { name: 'demo', repositoryOwner: 'acme', repositoryName: 'demo-repo', projectType: 'drupal11_v2' },
-    });
-    const createdText = JSON.parse((created.content as Array<{ text: string }>)[0].text) as { plan: { id: string } };
-    expect(createdText.plan.id).toBeTruthy();
-
-    const approved = await client.callTool({
-      name: 'devpanel_approve_and_execute_plan',
-      arguments: { planId: createdText.plan.id },
-    });
-    const approveText = JSON.parse((approved.content as Array<{ text: string }>)[0].text) as { state: string };
-    // Approved and executed inline via the elicitation dialog — no external review URL involved.
+    ) as { state: string };
     expect(approveText.state).toBe('EXECUTED');
 
-    await client.close();
+    // A stale hash must not be able to approve a plan that moved on.
+    const stale = await mcp(init.sessionId, {
+      jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: {
+        name: 'devpanel_approve_and_execute_plan',
+        arguments: { planId: createdText.plan.id, decision: 'APPROVE', planHash: 'not-the-hash' },
+      },
+    });
+    const staleText = JSON.parse(
+      ((stale.body as { result: { content: Array<{ text: string }> } }).result.content[0].text),
+    ) as { errorCode?: string };
+    expect(staleText.errorCode).toBeTruthy();
   });
 
-  it('serves the external review UI and records approval', async () => {
+  it('no longer serves a review UI: /review is a plain 404', async () => {
     ctx = await startApp();
-    const plan: ChangePlan = {
-      id: 'plan-review-1',
-      version: 1,
-      action: 'BACKUP_APPLICATION',
-      status: 'READY_FOR_REVIEW',
-      risk: 'LOW',
-      summary: 'Backup the demo app',
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      hash: 'hash-abc',
-      ownerId: 'local',
-      target: { applicationName: 'demo' },
-      proposedInput: {},
-      steps: [{ order: 1, operation: 'createBackup', description: 'Create a manual backup', mutates: true }],
-      preconditions: {},
-      expectedResult: 'Backup created',
-      rollback: 'Delete the backup',
-    };
-    await ctx.store.save(plan);
-
-    const page = await fetch(`${ctx.base}/review/plan-review-1`);
-    expect(page.status).toBe(200);
-    const html = await page.text();
-    expect(html).toContain('Backup the demo app');
-    expect(html).toContain('Approve exact plan');
-
-    const post = await fetch(`${ctx.base}/review/plan-review-1`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: 'decision=approve',
-    });
-    expect(post.status).toBe(200);
-    expect(await post.text()).toContain('Approved');
-    expect((await ctx.store.get(plan.id))?.approval?.decision).toBe('APPROVE');
-
-    const missing = await fetch(`${ctx.base}/review/does-not-exist`);
-    expect(missing.status).toBe(404);
+    const page = await fetch(`${ctx.base}/review/anything`);
+    expect(page.status).toBe(404);
   });
 });

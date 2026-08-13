@@ -4,7 +4,6 @@ import { RealDevPanelClient } from '../src/clients/real-devpanel.js';
 import { InMemoryPlanStore } from '../src/stores/plan-store.js';
 import { PlanService } from '../src/services/plan-service.js';
 import { ExecutionService } from '../src/services/execution-service.js';
-import { ApprovalService } from '../src/approval/approval-service.js';
 import { hashPlan } from '../src/utils/hash.js';
 import { TokenScopedDevPanelClient } from '../src/clients/token-scoped-client.js';
 import { clearSession, getOwnerId, saveSession } from '../src/auth/session.js';
@@ -23,7 +22,7 @@ describe('plan -> approval -> execute', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -31,106 +30,6 @@ describe('plan -> approval -> execute', () => {
     expect(result.state).toBe('EXECUTED');
     const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
     expect(backups).toHaveLength(1);
-  });
-});
-
-describe('elicitation approval flow', () => {
-  it('approves via form elicitation and executes', async () => {
-    const dp = new MockDevPanelClient();
-    const store = new InMemoryPlanStore();
-    const plans = new PlanService(dp, store);
-    const executor = new ExecutionService(dp, store);
-
-    const mockElicitFn = vi.fn().mockResolvedValue({
-      action: 'accept',
-      content: { confirm: true },
-    });
-
-    const approvalService = new ApprovalService(store, mockElicitFn, undefined);
-
-    const plan = await plans.backupPlan('app_demo_1');
-    const outcome = await approvalService.requestApproval(plan);
-
-    expect(outcome.status).toBe('approved');
-    if (outcome.status === 'approved') {
-      expect(outcome.record.decision).toBe('APPROVE');
-      expect(outcome.record.approvalMethod).toBe('MCP_ELICITATION');
-      expect(outcome.record.planHash).toBe(plan.hash);
-    }
-
-    const approvedPlan = await store.get(plan.id)!;
-    const result = await executor.executeApprovedPlan(approvedPlan!);
-    expect(result.state).toBe('EXECUTED');
-
-    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
-    expect(backups).toHaveLength(1);
-  });
-
-  it('declines via form elicitation and does not execute', async () => {
-    const dp = new MockDevPanelClient();
-    const store = new InMemoryPlanStore();
-    const plans = new PlanService(dp, store);
-    const executor = new ExecutionService(dp, store);
-
-    const mockElicitFn = vi.fn().mockResolvedValue({
-      action: 'decline',
-    });
-
-    const approvalService = new ApprovalService(store, mockElicitFn, undefined);
-
-    const plan = await plans.backupPlan('app_demo_1');
-    const outcome = await approvalService.requestApproval(plan);
-
-    expect(outcome.status).toBe('declined');
-    if (outcome.status === 'declined') {
-      expect(outcome.approvalMethod).toBe('MCP_ELICITATION');
-    }
-
-    await expect(executor.executeApprovedPlan(plan)).rejects.toThrow('Plan has not been approved');
-
-    const backups = await dp.listBackups(await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' }));
-    expect(backups).toHaveLength(0);
-  });
-
-  it('cancels via form elicitation in explicit form mode', async () => {
-    const originalMode = config.approvalMode;
-    config.approvalMode = 'form';
-
-    try {
-      const dp = new MockDevPanelClient();
-      const store = new InMemoryPlanStore();
-      const plans = new PlanService(dp, store);
-
-      const mockElicitFn = vi.fn().mockResolvedValue({
-        action: 'cancel',
-      });
-
-      const approvalService = new ApprovalService(store, mockElicitFn, undefined);
-
-      const plan = await plans.backupPlan('app_demo_1');
-      const outcome = await approvalService.requestApproval(plan);
-
-      expect(outcome.status).toBe('cancelled');
-    } finally {
-      config.approvalMode = originalMode;
-    }
-  });
-
-  it('falls back to external URL when elicitation is unavailable', async () => {
-    const dp = new MockDevPanelClient();
-    const store = new InMemoryPlanStore();
-    const plans = new PlanService(dp, store);
-
-    const approvalService = new ApprovalService(store, undefined, undefined);
-
-    const plan = await plans.backupPlan('app_demo_1');
-    const outcome = await approvalService.requestApproval(plan);
-
-    expect(outcome.status).toBe('url_fallback');
-    if (outcome.status === 'url_fallback') {
-      expect(outcome.approvalUrl).toContain(plan.id);
-      expect(outcome.approvalUrl).toContain('/review/');
-    }
   });
 });
 
@@ -157,7 +56,7 @@ describe('security: model bypass attempts', () => {
     const plan = await plans.backupPlan('app_demo_1');
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: 'sha256:wrong_hash', approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -176,7 +75,7 @@ describe('security: model bypass attempts', () => {
     const plan = await plans.backupPlan('app_demo_1');
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const tamperedPlan = await store.get(plan.id);
@@ -198,7 +97,7 @@ describe('security: model bypass attempts', () => {
     const plan = await plans.backupPlan('app_demo_1');
     await store.setApproval(plan.id, {
       decision: 'REJECT', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const rejectedPlan = await store.get(plan.id)!;
@@ -224,7 +123,7 @@ describe('stale and expired plans', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: expiredPlan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const expired = await store.get(plan.id)!;
@@ -241,7 +140,7 @@ describe('stale and expired plans', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION'
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION'
     });
 
     const app = await dp.getApplication({ id: 'app_demo_1', projectId: 'project_demo_1', workspaceId: 'mock-workspace' });
@@ -503,7 +402,7 @@ describe('activate flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -611,7 +510,7 @@ describe('deactivate flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -697,7 +596,7 @@ describe('delete project flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -752,7 +651,7 @@ describe('delete workspace flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -809,7 +708,7 @@ describe('editor/PMA toggle flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
     const approvedPlan = await store.get(plan.id)!;
     const result = await executor.executeApprovedPlan(approvedPlan!);
@@ -846,7 +745,7 @@ describe('editor/PMA toggle flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
     const approvedPlan = await store.get(plan.id)!;
     const result = await executor.executeApprovedPlan(approvedPlan!);
@@ -1011,7 +910,7 @@ describe('create application flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
     const approved = await store.get(plan.id);
     expect(approved).not.toBeNull();
@@ -1165,7 +1064,7 @@ describe('workspace creation flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;
@@ -1199,7 +1098,7 @@ describe('workspace creation flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     dp.removeEnvironment('env_mock_1');
@@ -1221,7 +1120,7 @@ describe('workspace creation flow', () => {
 
     await store.setApproval(plan.id, {
       decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
-      approvedBy: 'test-user', approvalMethod: 'MCP_ELICITATION',
+      approvedBy: 'test-user', approvalMethod: 'IN_CONVERSATION',
     });
 
     const approvedPlan = await store.get(plan.id)!;

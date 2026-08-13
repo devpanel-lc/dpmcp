@@ -5,7 +5,6 @@ function env(name: string, fallback?: string): string {
 }
 
 const callbackPort = Number(env('DP_LOGIN_CALLBACK_PORT', '8788'));
-const approvalPort = Number(env('APPROVAL_PORT', '8787'));
 
 /** stdio = local MCP client spawns this process (loopback login callback).
  *  http = public HTTP server (Railway etc.) with MCP OAuth for the /mcp endpoint. */
@@ -66,13 +65,6 @@ export const config = {
   defaultWorkspaceId: env('DP_DEFAULT_WORKSPACE_ID', 'mock-workspace'),
   enableRealCreate: env('DP_ENABLE_REAL_CREATE', 'false') === 'true',
   createProfile: env('DP_CREATE_PROFILE', 'drupal11-demo'),
-  approvalMode: env('APPROVAL_MODE', 'auto') as 'auto' | 'form' | 'url' | 'external',
-  approvalHost: env('APPROVAL_HOST', '127.0.0.1'),
-  approvalPort,
-  approvalPublicBaseUrl: env(
-    'APPROVAL_PUBLIC_BASE_URL',
-    transport === 'http' ? publicBaseUrl : `http://127.0.0.1:${approvalPort}`,
-  ),
   planTtlSeconds: Number(env('PLAN_TTL_SECONDS', '900')),
   /** Port the HTTP server binds in http mode (Railway sets PORT). */
   httpPort: Number(env('PORT', '3000')),
@@ -84,8 +76,6 @@ export const config = {
   loginCallbackPort: callbackPort,
   /** How often to re-print the login URL while a login attempt is pending. */
   loginTimeoutMs: Number(env('DP_LOGIN_TIMEOUT_MS', '180000')),
-  /** Cap on how long a client-native elicitation dialog may take before we fall back to the external review URL. */
-  elicitTimeoutMs: Number(env('DP_ELICIT_TIMEOUT_MS', '60000')),
   /**
    * Print every /mcp request's bearer tokens to the server log, IN FULL.
    * Local debugging aid only: the values logged are live credentials, so

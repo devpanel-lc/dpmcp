@@ -31,22 +31,37 @@ Plan-only:
 Execute:
 - `devpanel_approve_and_execute_plan(planId)` -- the only MCP tool allowed to mutate DevPanel
 
-## Approval priority
+## Approval
 
-1. **Form Elicitation** -- native approve/decline dialog inside the MCP client
-2. **URL Elicitation** -- client prompts user to open a review URL
-3. **External approval URL** -- model returns a URL for the user to open in a browser
+Approval happens **in the agent conversation**, as plain text. There is one path
+and nothing to configure -- no client dialog, no review web page, no approval
+URL. Client-native elicitation was removed because real MCP clients either don't
+implement it or don't keep a stream open to receive it, so it degraded to a
+browser URL on every approval.
 
-Set `APPROVAL_MODE` to control which method is used:
+`devpanel_approve_and_execute_plan` is called twice:
 
-```env
-APPROVAL_MODE=auto     # capability negotiation (default)
-APPROVAL_MODE=form     # force Form Elicitation
-APPROVAL_MODE=url      # force URL Elicitation
-APPROVAL_MODE=external # force external HTTP review page
-```
+1. **`{ planId }`** -- returns the plan rendered as text with a fixed question at
+   the bottom (`Reply APPROVE to execute it, or REJECT to cancel.`) and records
+   nothing. The agent shows that text and waits.
+2. **`{ planId, decision, planHash }`** -- `decision` is the human's literal
+   answer relayed back, `planHash` is the hash from the plan they were shown. A
+   hash that no longer matches is refused, so an answer cannot approve a plan
+   that changed after it was displayed.
 
-`auto` means capability-based selection, NOT automatic approval.
+The executor's own guarantees are unchanged: a plan executes only with an
+`APPROVE` record bound to its current hash, within its TTL, owned by the caller,
+and revalidated against live DevPanel state immediately before mutating.
+
+### What this trades away
+
+The human's answer reaches the server **through the model**, as a tool argument.
+A model that fabricates `decision: "APPROVE"` is indistinguishable from a human
+who typed it. The real gate is the MCP client's own tool-permission prompt on the
+second call -- which this server can neither see nor require, and which does not
+exist in a client running in auto-approve mode. Earlier versions refused to
+accept approval as a tool argument for exactly this reason; that protection is
+gone by choice, in exchange for approval never leaving the conversation.
 
 ## Workflow
 
@@ -61,9 +76,9 @@ Model presents plan to user
    ↓
 devpanel_approve_and_execute_plan(planId)
    ↓
-Server requests human approval (Form Elicitation / URL / External)
+Server returns the plan as text + "APPROVE or REJECT?"
    ↓
-Human approves exact plan hash
+Human answers in the conversation; model relays it back with the plan hash
    ↓
 Server revalidates preconditions
    ↓
@@ -72,17 +87,11 @@ Server executes mutation
 Server returns result inline
 ```
 
-## Why approval is not a tool argument
+## Why the plan itself is not a tool argument
 
-The executor never accepts `approved: true`, repository changes, application IDs, backup IDs, or any other mutable action input. The plan is frozen before approval. Approval is stored separately and bound to the plan SHA-256 hash.
+The executor never accepts repository changes, application IDs, backup IDs, or any other mutable action input at approval time. The plan is frozen when it is created and bound to its SHA-256 hash; approval references that hash and nothing else, so the action that executes is exactly the one that was displayed.
 
-This prevents the model from turning:
-
-```json
-{"planId":"plan_123","approved":true}
-```
-
-into fake human approval.
+The human's `decision` **is** a tool argument -- see [What this trades away](#what-this-trades-away).
 
 ## Quick start -- safe mock demo
 
@@ -104,8 +113,8 @@ Suggested demo:
 
 1. `devpanel_list_applications`
 2. `devpanel_plan_backup_application` with `Existing Demo`
-3. `devpanel_approve_and_execute_plan` with returned plan ID
-4. Approve via Form Elicitation dialog (or open the returned `approval_url`)
+3. `devpanel_approve_and_execute_plan` with returned plan ID -- prints the plan and the question
+4. Answer `APPROVE`; the agent calls the tool again with `decision` and `planHash`
 5. `devpanel_list_backups` to verify the result
 
 ## Environment variables
@@ -133,7 +142,6 @@ Full annotated defaults live in `.env.example` (`cp .env.example .env` to start)
 | `DP_PUBLIC_BASE_URL` | (empty) | `DP_TRANSPORT=http` | Public origin, e.g. `https://dpmcp.up.railway.app` (no trailing slash) |
 | `DP_ALLOWED_HOSTS` | derived from `DP_PUBLIC_BASE_URL` | -- | Host-header allowlist (anti DNS-rebinding) |
 | `PORT` | `3000` | -- | HTTP listen port (Railway sets this automatically) |
-| `DP_ELICIT_TIMEOUT_MS` | `60000` | -- | Max wait for a client-native elicitation dialog before falling back to the external review URL |
 
 **Cognito SSO** (`DP_AUTH_MODE=sso` only)
 
@@ -151,10 +159,7 @@ Full annotated defaults live in `.env.example` (`cp .env.example .env` to start)
 
 | Var | Default | Notes |
 |---|---|---|
-| `APPROVAL_MODE` | `auto` | `auto` / `form` / `url` / `external` -- see [Approval priority](#approval-priority) |
-| `APPROVAL_HOST` | `127.0.0.1` | Bind host for the external review UI (stdio mode) |
-| `APPROVAL_PORT` | `8787` | Bind port for the external review UI (stdio mode) |
-| `APPROVAL_PUBLIC_BASE_URL` | derived | `{DP_PUBLIC_BASE_URL}` (http) or `http://127.0.0.1:{APPROVAL_PORT}` (stdio) |
+| _(none)_ | -- | Approval is in-conversation and has no configuration -- see [Approval](#approval) |
 | `PLAN_TTL_SECONDS` | `900` | How long a plan stays valid before going `STALE` |
 
 ## Real DevPanel mode
