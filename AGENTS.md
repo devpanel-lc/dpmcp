@@ -2,7 +2,7 @@
 
 ## What this is
 
-MCP server (TypeScript, stdio or http transport via `DP_TRANSPORT`) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan via MCP client-native elicitation or external review UI**.
+MCP server (TypeScript, stdio or http transport via `DP_TRANSPORT`) for planning, reviewing, approving, and executing DevPanel application mutations. The central invariant: **the model may inspect and plan freely but may not mutate DevPanel until a human approves an immutable plan**. Approval is in-conversation: the plan is rendered as text, the human answers APPROVE/REJECT, and the model relays that answer with the plan hash.
 
 ## Commands
 
@@ -32,33 +32,31 @@ Default `DP_MODE=mock` requires no external services. Copy `.env.example` → `.
 
 Real CREATE is gated behind `DP_ENABLE_REAL_CREATE=true` — see `config/create-profiles/drupal11-demo.json`. The profile's `verified` field must be `true` before enabling; do not guess the create-project response contract.
 
-## Approval modes
+## Approval
 
-`APPROVAL_MODE` controls how human approval is obtained:
+Approval has no configuration. `devpanel_approve_and_execute_plan` is called
+twice: `{planId}` returns the plan as text plus a fixed question and records
+nothing; `{planId, decision, planHash}` relays the human's literal answer, and a
+hash mismatch is refused. Client-native elicitation and the external review page
+were removed -- real clients either don't implement elicitation or don't hold a
+stream open to receive it, so every approval degraded to a browser URL.
 
-| Mode | Behavior |
-|------|----------|
-| `auto` (default) | Capability negotiation: Form Elicitation → URL Elicitation → External URL |
-| `form` | Force Form Elicitation (native client dialog). Falls back to cancelled if unsupported. |
-| `url` | Force URL Elicitation (client prompts user to open URL). Falls back to cancelled if unsupported. |
-| `external` | Force external HTTP review page (`http://127.0.0.1:8787/review/{planId}`) |
-
-`auto` means capability-based selection, NOT automatic approval. Plans always require explicit human approval.
+Caveat to keep in mind when changing this area: `decision` is a tool argument, so
+the model is mechanically able to forge it. The remaining human gate is the MCP
+client's own tool-permission prompt, which this server cannot observe or require.
 
 ## Architecture (non-obvious)
 
 ```
-src/index.ts                      → wires client, store, approval server, stdio transport
+src/index.ts                      → wires client, store, stdio transport
 src/server.ts                     → builds McpServer, delegates to registerTools
-src/tools/register.ts             → all MCP tools; devpanel_approve_and_execute_plan triggers elicitation
+src/tools/register.ts             → all MCP tools; devpanel_approve_and_execute_plan renders the plan + records the relayed decision
 src/services/plan-service.ts      → creates immutable ChangePlan objects
 src/services/execution-service.ts → validates, revalidates, executes approved plans
 src/services/application-resolver.ts → resolves app by ID or fuzzy search
 src/clients/                      → DevPanelClient interface + MockDevPanelClient + RealDevPanelClient
 src/stores/plan-store.ts          → InMemoryPlanStore (swap for durable store in prod)
-src/approval/approval-service.ts  → orchestrates approval via elicitation providers
-src/approval/providers/           → form-elicitation.ts, url-elicitation.ts, external-url.ts
-src/approval/review-server.ts     → HTTP server for external URL fallback review UI
+src/approval/plan-summary.ts      → renders a plan as text + the static approval question
 src/domain/types.ts               → ChangePlan, ApprovalRecord, PlanStatus, ElicitationResult
 src/utils/                        → hash.ts (SHA-256 plan fingerprint), fingerprint.ts (app state fingerprint)
 src/generated/devpanel-api.d.ts   → generated from devpanel-openapi.json via `npm run generate:api`, do not hand-edit
@@ -76,7 +74,7 @@ src/auth/login-server.ts          → drives the Cognito login/callback flow (lo
 - **stdout is reserved for MCP** when using stdio — all logs go to `console.error`.
 - `devpanel_approve_and_execute_plan` is the **only** tool that may call mutating DevPanel client methods.
   - Exception: `devpanel_set_git_token` / `devpanel_remove_git_token` mutate the calling user's credential config directly (user-scoped auth setup, not application state). No other direct-mutation tools may be added.
-- The executor **never** accepts `approved: true` or any mutable action parameters — approval is bound to `plan.hash` via an `ApprovalRecord` written through MCP Elicitation (human response) or external review UI.
+- The executor **never** accepts mutable action parameters at approval time — approval is bound to `plan.hash` via an `ApprovalRecord`. The `decision` argument carries only APPROVE/REJECT, and is refused unless the accompanying `planHash` matches the current plan.
 - Plans become `STALE` when preconditions fail (app fingerprint changed, backup disappeared) or TTL expires (`PLAN_TTL_SECONDS`, default 900s).
 - The executor re-reads DevPanel state immediately before mutation (revalidation step).
 - Plans are immutable after review begins; plan hash is computed by `hashPlan()`.
@@ -90,13 +88,11 @@ Model calls devpanel_approve_and_execute_plan(planId)
   ↓
 Server checks: approval exists? → execute if approved
   ↓
-No approval → ApprovalService.requestApproval()
+No approval → return plan text + "APPROVE or REJECT?" (nothing recorded)
   ↓
-  ├── Form Elicitation (native client dialog)
-  ├── URL Elicitation (client opens URL)
-  └── External URL fallback (model returns URL)
+Human answers in the conversation
   ↓
-Human approves → ApprovalRecord written to store
+Model calls again with {decision, planHash} → ApprovalRecord written to store
   ↓
 Server revalidates preconditions
   ↓
@@ -108,7 +104,7 @@ Server returns result
 ## Testing
 
 - Framework: Vitest (`vitest run`)
-- Single test file: `tests/plan-flow.test.ts` — tests plan → approval → execute flow, elicitation paths, security bypass attempts, stale/expired plans, and hash integrity.
+- `tests/plan-flow.test.ts` — plan → approval → execute flow, security bypass attempts, stale/expired plans, hash integrity. `tests/http-mode.test.ts` — the two-call in-conversation approval over http.
 - No fixtures or external services required.
 
 ## Gotchas
@@ -119,4 +115,4 @@ Server returns result
 - `package-lock.json` is checked in — run `npm install` before typecheck/test if `node_modules/` is missing.
 - Recommended Node version: 24 (see `.nvmrc`).
 - `config/create-profiles/drupal11-demo.json` contains a template payload with `{{placeholders}}` — not valid JSON for direct use; it is documentation of the expected shape.
-- MCP SDK has no "MCP Apps" or tool-hiding capability. Form Elicitation is the closest inline approval mechanism.
+- MCP SDK has no "MCP Apps" or tool-hiding capability. Elicitation exists but is unusable in practice: clients may not implement it, and over streamable-HTTP a request sent without `relatedRequestId` is silently dropped when no standalone SSE stream is open.

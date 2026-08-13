@@ -14,7 +14,6 @@ import type { PlanStore } from './stores/plan-store.js';
 import { McpOAuthProvider, startOAuthMapSweep } from './auth/mcp-oauth.js';
 import { handleCallbackRequest, handleLoginRequest } from './auth/login-server.js';
 import { logMcpAuthDebug, logMcpForwardedTokenDebug, logMcpRpcDebug, logSessionDebug, warnIfAuthDebugEnabled } from './auth/debug-log.js';
-import { createReviewHandler } from './approval/review-server.js';
 
 /**
  * Public HTTP server (http transport).
@@ -267,9 +266,9 @@ export async function startHttpServer(dpFactory: DevPanelClientFactory, store: P
   app.get('/mcp', mcpHandler);
   app.delete('/mcp', mcpHandler);
 
-  // External review UI (last: everything else 404s through its handler).
-  app.use((req, res) => {
-    void createReviewHandler(store)(req, res);
+  // Approval happens in-conversation, so there is no review UI to serve.
+  app.use((_req, res) => {
+    res.status(404).type('text/plain').send('Not found');
   });
 
   const server = await new Promise<Server>((resolve, reject) => {

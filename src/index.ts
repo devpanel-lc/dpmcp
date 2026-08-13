@@ -6,7 +6,6 @@ import { RealDevPanelClient } from './clients/real-devpanel.js';
 import { TokenScopedDevPanelClient } from './clients/token-scoped-client.js';
 import type { DevPanelClientFactory } from './clients/devpanel.js';
 import { InMemoryPlanStore } from './stores/plan-store.js';
-import { startApprovalReviewServer } from './approval/review-server.js';
 import { buildServer } from './server.js';
 import { beginLogin, startLoginServer } from './auth/login-server.js';
 import { getSession, startAutoRefresh } from './auth/session.js';
@@ -51,13 +50,11 @@ const authLabel = config.authMode === 'sso' ? 'cognito-sso' : config.authMode ==
 
 if (config.transport === 'http') {
   // Public HTTP server (Railway etc.). /mcp is protected by MCP OAuth; the
-  // review UI is served publicly at /review/:planId; /login signs in to DevPanel.
   await startHttpServer(dpFactory, store);
-  console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode via http (auth: ${authLabel}, approval: ${config.approvalMode})`);
+  console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode via http (auth: ${authLabel}, approval: in-conversation)`);
 } else {
   const server = buildServer(dpFactory(), store);
-  startApprovalReviewServer(store);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode via stdio (auth: ${authLabel}, approval: ${config.approvalMode})`);
+  console.error(`[mcp] DevPanel Application MCP started in ${config.mode} mode via stdio (auth: ${authLabel}, approval: in-conversation)`);
 }

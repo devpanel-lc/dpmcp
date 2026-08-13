@@ -5,8 +5,7 @@ import type { PlanStore } from '../stores/plan-store.js';
 import { PlanService } from '../services/plan-service.js';
 import { ExecutionService } from '../services/execution-service.js';
 import { ApplicationResolver } from '../services/application-resolver.js';
-import { ApprovalService } from '../approval/approval-service.js';
-import type { ElicitFn } from '../approval/providers/form-elicitation.js';
+import { APPROVAL_QUESTION, planSummary } from '../approval/plan-summary.js';
 import { config } from '../config.js';
 import type { ErrorCode } from '../domain/types.js';
 import { defineReadOnlyTool } from './read-only-tool.js';
@@ -32,32 +31,6 @@ const applicationLookupSchema = {
   application: z.string().min(1).describe('Application ID, name, or search query'),
 };
 
-/**
- * Wrap client-native elicitation with a wait cap so a client that never
- * answers (doesn't implement elicitation, or opened no stream to receive the
- * request on) cannot hang the tool call forever. The SDK's own
- * `elicitInput()` already rejects per-client based on the capabilities the
- * connected client declared at `initialize` (`elicitation.form`/`.url`),
- * transport-independent — ApprovalService catches that rejection and falls
- * back to the external review URL (auto mode) or reports cancelled (form/url
- * modes), same as a timeout here.
- */
-function withElicitationGuard(elicitation: ElicitFn): ElicitFn {
-  return async (...args) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        elicitation(...args),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('elicitation timed out waiting for the client dialog')), config.elicitTimeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-}
-
 export function registerTools(server: McpServer, dp: DevPanelClient, store: PlanStore): void {
   const plans = new PlanService(dp, store);
   const executor = new ExecutionService(dp, store);
@@ -68,8 +41,6 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   // plans. See DevPanelClient.getCallerIdentity().
   const currentOwnerId = () => dp.getCallerIdentity();
 
-  const elicitationFn = withElicitationGuard(server.server.elicitInput.bind(server.server));
-  const approvalService = new ApprovalService(store, elicitationFn, elicitationFn);
 
   // ---- Discovery tools ----
 
@@ -322,10 +293,21 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
   // ---- Approval + Execution ----
 
   server.registerTool('devpanel_approve_and_execute_plan', {
-    description: 'Requests human approval for an immutable plan and executes it if approved. The model cannot approve plans directly -- this tool triggers an MCP client-native approval dialog (Form Elicitation) or falls back to an external review URL. Only accepts planId.',
-    inputSchema: { planId: z.string().min(1) },
+    description:
+      'Two-step human approval, entirely in-conversation. ' +
+      'Call FIRST with only planId: this returns the plan as text plus a confirm question, and changes nothing. ' +
+      'Show that text to the human verbatim and wait for them to reply. ' +
+      'Then call AGAIN with decision set to the human\'s literal answer (APPROVE or REJECT) plus the planHash from the plan. ' +
+      'NEVER supply decision on the first call, and NEVER invent, assume, or infer the human\'s answer -- only relay what they actually typed.',
+    inputSchema: {
+      planId: z.string().min(1),
+      decision: z.enum(['APPROVE', 'REJECT']).optional()
+        .describe("The human's literal answer, relayed verbatim. Omit on the first call."),
+      planHash: z.string().min(1).optional()
+        .describe('The Hash shown in the plan being approved. Required with decision; proves this is the plan the human saw.'),
+    },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async ({ planId }) => {
+  }, async ({ planId, decision, planHash }) => {
     const caller = currentOwnerId();
     const plan = await store.get(planId);
     if (!plan) return errorText('PLAN_NOT_FOUND', `Plan not found: ${planId}`);
@@ -360,43 +342,52 @@ export function registerTools(server: McpServer, dp: DevPanelClient, store: Plan
       }
     }
 
-    const outcome = await approvalService.requestApproval(plan, caller);
-
-    if (outcome.status === 'approved') {
-      const refreshedPlan = await store.get(planId);
-      if (!refreshedPlan) return errorText('PLAN_NOT_FOUND', `Plan not found after approval: ${planId}`);
-      try {
-        const result = await executor.executeApprovedPlan(refreshedPlan);
-        return text(result);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const current = await store.get(planId);
-        return errorText('EXECUTION_FAILED', message, { plan: current ?? refreshedPlan });
-      }
-    }
-
-    if (outcome.status === 'declined') {
-      await store.setApproval(planId, {
-        decision: 'REJECT', planHash: plan.hash, approvedAt: new Date().toISOString(),
-        approvedBy: caller, approvalMethod: outcome.approvalMethod,
-      });
-      return errorText('APPROVAL_REQUIRED', 'Human declined the plan.', { plan });
-    }
-
-    if (outcome.status === 'cancelled') {
-      return errorText('APPROVAL_CANCELLED', 'Approval dialog was cancelled.', { plan });
-    }
-
-    if (outcome.status === 'url_fallback') {
+    // First call: render the plan and the question. Nothing is recorded, so a
+    // model that stops here has changed nothing.
+    if (!decision) {
       return text({
         state: 'APPROVAL_REQUIRED',
+        plan_text: `${planSummary(plan)}\n\n${APPROVAL_QUESTION}`,
         plan,
-        approval_method: 'external_url',
-        approval_url: outcome.approvalUrl,
-        instruction: 'The user must open this URL and approve the exact plan. Do not claim approval. After approval, call devpanel_approve_and_execute_plan again with the same planId.',
+        instruction:
+          'Show plan_text to the human exactly as given, ending with the question, and stop. ' +
+          'Wait for their reply. Then call devpanel_approve_and_execute_plan again with the same planId, ' +
+          `decision set to what they actually answered, and planHash "${plan.hash}". ` +
+          'Do not answer on their behalf and do not claim approval they did not give.',
       });
     }
 
-    return errorText('APPROVAL_REQUIRED', 'Approval required but no approval method available.', { plan });
+    // Second call: the hash pins the decision to the plan the human was shown,
+    // so a plan that changed underneath cannot be approved by a stale answer.
+    if (!planHash) {
+      return errorText('APPROVAL_REQUIRED', 'planHash is required when supplying a decision. Re-read the plan and pass its Hash.', { plan });
+    }
+    if (planHash !== plan.hash) {
+      return errorText('PLAN_INTEGRITY_FAILED', 'planHash does not match the current plan. The plan changed after it was shown; re-read it and ask again.', { plan });
+    }
+
+    if (decision === 'REJECT') {
+      await store.setApproval(planId, {
+        decision: 'REJECT', planHash: plan.hash, approvedAt: new Date().toISOString(),
+        approvedBy: caller, approvalMethod: 'IN_CONVERSATION',
+      });
+      return errorText('APPROVAL_REQUIRED', 'Human rejected the plan.', { plan });
+    }
+
+    await store.setApproval(planId, {
+      decision: 'APPROVE', planHash: plan.hash, approvedAt: new Date().toISOString(),
+      approvedBy: caller, approvalMethod: 'IN_CONVERSATION',
+    });
+
+    const refreshedPlan = await store.get(planId);
+    if (!refreshedPlan) return errorText('PLAN_NOT_FOUND', `Plan not found after approval: ${planId}`);
+    try {
+      const result = await executor.executeApprovedPlan(refreshedPlan);
+      return text(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const current = await store.get(planId);
+      return errorText('EXECUTION_FAILED', message, { plan: current ?? refreshedPlan });
+    }
   });
 }
