@@ -413,6 +413,40 @@ describe('activate flow', () => {
     expect(app.status).toBe('DEPLOY_APPLICATION_SUCCESS');
   });
 
+  it('warns and fills in generic defaults for activate fields the caller left unset', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {});
+
+    expect(plan.warnings).toBeDefined();
+    expect(plan.warnings![0]).toContain('containerImage');
+    expect(plan.warnings![0]).toContain('capacity');
+    const config = (plan.proposedInput as { activateConfig: Record<string, unknown> }).activateConfig;
+    expect(config.containerImage).toBe('devpanel/php:8.3-base-rc');
+    expect(config.capacity).toBe('micro');
+    expect(config.appRoot).toBe('/var/www/html');
+    expect(config.webRoot).toBe('/var/www/html/web');
+    expect(config.groupType).toBe('on-demand');
+  });
+
+  it('does not warn when all review-relevant activate fields are explicitly set', async () => {
+    const dp = new MockDevPanelClient();
+    const store = new InMemoryPlanStore();
+    const plans = new PlanService(dp, store);
+
+    const plan = await plans.activatePlan('app_demo_1', {
+      groupType: 'spot', capacity: 'large', storage: 20,
+      appRoot: '/app', webRoot: '/app/web', containerImage: 'devpanel/php:8.3-drupal',
+    });
+
+    expect(plan.warnings).toBeUndefined();
+    const config = (plan.proposedInput as { activateConfig: Record<string, unknown> }).activateConfig;
+    expect(config.capacity).toBe('large');
+    expect(config.containerImage).toBe('devpanel/php:8.3-drupal');
+  });
+
   it('rejects activate when app is already deployed', async () => {
     const dp = new MockDevPanelClient();
     const store = new InMemoryPlanStore();

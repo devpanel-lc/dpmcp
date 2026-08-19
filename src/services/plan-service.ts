@@ -7,6 +7,7 @@ import { hashPlan } from '../utils/hash.js';
 import { applicationFingerprint } from '../utils/fingerprint.js';
 import { ApplicationResolver } from './application-resolver.js';
 import { assertRealCreateInput, assertRealCreateReady } from '../clients/real-create-gate.js';
+import { ACTIVATE_GENERIC_DEFAULTS, ACTIVATE_REVIEW_FIELDS } from '../domain/activate-defaults.js';
 
 const OWNER_ID_LOCAL = 'local';
 
@@ -19,8 +20,8 @@ export class PlanService {
   async createApplicationPlan(input: CreateApplicationRequest, ownerId = OWNER_ID_LOCAL): Promise<ChangePlan> {
     await assertRealCreateReady();
     assertRealCreateInput(input);
-    const existing = await this.dp.listApplications(input.workspaceId, input.repositoryName);
-    const same = existing.find(a => (a.name ?? '').toLowerCase() === input.repositoryName.toLowerCase());
+    const existing = await this.dp.listApplications(input.workspaceId, input.name);
+    const same = existing.find(a => (a.name ?? '').toLowerCase() === input.name.toLowerCase());
     if (same) throw new Error(`Application/project name conflict candidate already exists: ${same.name} (${same.id})`);
     return this.createPlan({
       action: 'CREATE_APPLICATION', risk: 'LOW', ownerId,
@@ -76,11 +77,24 @@ export class PlanService {
       }
       throw new Error(`Application ${app.name ?? app.id} has status "${app.status}". Activation requires status UNDEPLOY_APPLICATION_SUCCESS; check the current status with devpanel_get_application before retrying.`);
     }
+
+    // Fields the caller left unset get the generic (not project-type-aware) fallback --
+    // flag those in the plan so the human approving it can catch a mismatched
+    // image/capacity/root before it ships, instead of it silently going out.
+    const unreviewed = ACTIVATE_REVIEW_FIELDS.filter(f => (activateConfig as Record<string, unknown>)[f] === undefined);
+    // Plain spread would copy explicit `undefined` keys from activateConfig over the
+    // defaults, clobbering them back to undefined -- only overlay keys that are actually set.
+    const definedOverrides = Object.fromEntries(Object.entries(activateConfig).filter(([, v]) => v !== undefined));
+    const resolvedConfig: ActivateConfig = { ...ACTIVATE_GENERIC_DEFAULTS, ...definedOverrides } as ActivateConfig;
+    const warnings = unreviewed.length > 0
+      ? [`Using generic (not stack-specific) defaults for: ${unreviewed.map(f => `${f}=${JSON.stringify((resolvedConfig as Record<string, unknown>)[f])}`).join(', ')}. Verify these fit this application's stack before approving.`]
+      : undefined;
+
     return this.createPlan({
       action: 'ACTIVATE_APPLICATION', risk: 'MEDIUM', ownerId,
       summary: `Activate (deploy) application ${app.name ?? app.id} to K8s`,
       target: appSummary(app),
-      proposedInput: { ...appSummary(app), activateConfig },
+      proposedInput: { ...appSummary(app), activateConfig: resolvedConfig },
       steps: [
         step(1, 'REVALIDATE', 'Verify application is still in UNDEPLOY_APPLICATION_SUCCESS status', false),
         step(2, 'ACTIVATE_APPLICATION', 'Deploy the application to Kubernetes via PATCH /activate', true),
@@ -88,7 +102,8 @@ export class PlanService {
       ],
       preconditions: snapshot(app),
       expectedResult: `Application ${app.name ?? app.id} is deployed to Kubernetes with status DEPLOY_APPLICATION_SUCCESS.`,
-      rollback: 'Undeploy via devpanel_plan_deactivate_application if rollback is required.'
+      rollback: 'Undeploy via devpanel_plan_deactivate_application if rollback is required.',
+      warnings,
     });
   }
 
@@ -267,7 +282,7 @@ export class PlanService {
     });
   }
 
-  private async createPlan(input: { action: PlanAction; risk: RiskLevel; ownerId: string; summary: string; target: Record<string, unknown>; proposedInput: Record<string, unknown>; steps: PlanStep[]; preconditions: Preconditions; expectedResult: string; rollback: string; }): Promise<ChangePlan> {
+  private async createPlan(input: { action: PlanAction; risk: RiskLevel; ownerId: string; summary: string; target: Record<string, unknown>; proposedInput: Record<string, unknown>; steps: PlanStep[]; preconditions: Preconditions; expectedResult: string; rollback: string; warnings?: string[]; }): Promise<ChangePlan> {
     const now = new Date();
     const base = {
       id: `plan_${randomUUID()}`, version: 1 as const, action: input.action,
@@ -276,6 +291,7 @@ export class PlanService {
       ownerId: input.ownerId,
       target: input.target, proposedInput: input.proposedInput, steps: input.steps,
       preconditions: input.preconditions, expectedResult: input.expectedResult, rollback: input.rollback,
+      ...(input.warnings && input.warnings.length > 0 ? { warnings: input.warnings } : {}),
     };
     const plan: ChangePlan = { ...base, hash: hashPlan(base) };
     await this.store.save(plan);

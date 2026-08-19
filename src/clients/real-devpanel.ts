@@ -5,27 +5,10 @@ import { apiPath } from './api-paths.js';
 import { config } from '../config.js';
 import { assertRealCreateInput, assertRealCreateReady, loadCreateProfile } from './real-create-gate.js';
 import { getAccessToken, getLoginUrl, getOwnerId, refreshNow, clearSession } from '../auth/session.js';
+import { ACTIVATE_GENERIC_DEFAULTS } from '../domain/activate-defaults.js';
 
 const ACTIVATE_POLL_MAX_ATTEMPTS = 150;
 const ACTIVATE_POLL_INTERVAL_MS = 2000;
-
-// Mirrors a real DevPanel UI activate request (captured 2026-08-03).
-const ACTIVATE_DEFAULTS = {
-  copyDatabaseFilesType: '',
-  isEnablePgDb: false,
-  isEnableBasicAuth: false,
-  filePermissionLevel: 'stricterPermission',
-  containerImage: 'devpanel/php:8.3-base-rc',
-  secretManager: '',
-  appRoot: '/var/www/html',
-  webRoot: '/var/www/html/web',
-  capacity: 'micro',
-  capacityLimit: 'micro',
-  groupType: 'on-demand',
-  storage: 5,
-  isEnableEditor: false,
-  isEnablePMA: false,
-};
 
 // Mirrors a real DevPanel UI application-update request (captured 2026-08-06). This
 // endpoint expects the application's FULL current config on every PATCH -- the DevPanel
@@ -58,6 +41,17 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function firstString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) if (typeof obj[k] === 'string') return obj[k] as string;
+  return undefined;
+}
+
+/** Like firstString, but also accepts a raw JSON number (e.g. GitHub's numeric repo
+ *  id) and stringifies it -- provider IDs are documented as strings but arrive as numbers. */
+function firstIdString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number') return String(v);
+  }
   return undefined;
 }
 
@@ -356,7 +350,7 @@ export class RealDevPanelClient implements DevPanelClient {
 
   async activateApplication(app: ApplicationRef, actConfig: ActivateConfig): Promise<ApplicationRef> {
     this.requireHierarchy(app);
-    const body = { ...ACTIVATE_DEFAULTS, ...actConfig };
+    const body = { ...ACTIVATE_GENERIC_DEFAULTS, ...actConfig };
     const raw = await this.request(
       apiPath('/api/v2/workspaces/{workspaceId}/projects/{projectId}/applications/{applicationId}/activate', { workspaceId: app.workspaceId, projectId: app.projectId, applicationId: app.id }),
       { method: 'PATCH', body: JSON.stringify(body) },
@@ -512,7 +506,7 @@ export class RealDevPanelClient implements DevPanelClient {
   private normalizeRepo(raw: unknown): GitRepoRef {
     const r = asRecord(raw);
     return {
-      id: firstString(r, '_id', 'id', 'repoId', 'repositoryId') ?? '',
+      id: firstIdString(r, '_id', 'id', 'repoId', 'repositoryId') ?? '',
       name: firstString(r, 'name', 'repoName', 'repositoryName') ?? '',
       owner: firstString(r, 'owner', 'ownerName', 'repositoryOwner') ?? '',
       provider: firstString(r, 'provider', 'gitProvider', 'repositoryProvider') ?? '',
