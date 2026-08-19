@@ -20,6 +20,11 @@ export function planSummary(plan: ChangePlan): string {
     `Expires: ${plan.expiresAt}`,
   ];
 
+  if (plan.warnings && plan.warnings.length > 0) {
+    lines.push(``, `WARNINGS:`);
+    for (const w of plan.warnings) lines.push(`  - ${w}`);
+  }
+
   const t = plan.target as Record<string, unknown>;
   if (t.applicationName || t.applicationId) {
     lines.push(``, `Target:`);

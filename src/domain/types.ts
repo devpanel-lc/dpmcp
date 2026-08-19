@@ -89,8 +89,8 @@ export interface GitBranchRef {
 }
 
 export interface ActivateConfig {
-  groupType: 'spot' | 'on-demand';
-  capacity: string;
+  groupType?: 'spot' | 'on-demand';
+  capacity?: string;
   capacityLimit?: string;
   copyDatabaseFilesType?: string;
   isEnablePgDb?: boolean;
@@ -197,6 +197,7 @@ export interface ChangePlan {
   preconditions: Preconditions;
   expectedResult: string;
   rollback: string;
+  warnings?: string[];
   approval?: ApprovalRecord;
   execution?: {
     startedAt: string;
